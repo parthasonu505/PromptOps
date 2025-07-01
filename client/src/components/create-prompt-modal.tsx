@@ -193,7 +193,7 @@ export function CreatePromptModal({ open, onOpenChange }: CreatePromptModalProps
                     />
                   </FormControl>
                   <FormDescription>
-                    Use variables like {"{"}{"{"variable_name{"}"}{"}"}for dynamic content.
+                    Use variables like {"{{variable_name}}"} for dynamic content.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
