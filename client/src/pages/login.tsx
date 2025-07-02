@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { useLocation } from "wouter";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -19,7 +18,6 @@ const loginSchema = z.object({
 type LoginFormData = z.infer<typeof loginSchema>;
 
 export default function Login() {
-  const [, setLocation] = useLocation();
   const { login } = useAuth();
   const { toast } = useToast();
   const [isLoading, setIsLoading] = useState(false);
@@ -40,7 +38,7 @@ export default function Login() {
         title: "Success",
         description: "Logged in successfully",
       });
-      setLocation("/");
+      // Let the Router component handle the redirect automatically
     } catch (error) {
       toast({
         title: "Error",
