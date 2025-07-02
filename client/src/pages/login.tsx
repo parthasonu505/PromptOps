@@ -125,7 +125,12 @@ export default function Login() {
 
         <div className="text-center text-sm text-muted-foreground">
           <p>Demo credentials:</p>
-          <p>Username: admin | Password: admin123</p>
+          <div className="space-y-1">
+            <p><strong>Admin:</strong> admin / admin123</p>
+            <p><strong>Engineer:</strong> engineer / engineer123</p>
+            <p><strong>Lead:</strong> lead / lead123</p>
+            <p><strong>Developer:</strong> developer / dev123</p>
+          </div>
         </div>
       </div>
     </div>
