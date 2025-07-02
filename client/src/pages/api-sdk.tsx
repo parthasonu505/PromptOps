@@ -527,7 +527,7 @@ prompt = response.json()`}
                   <SelectValue placeholder="Never expires" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Never expires</SelectItem>
+                  <SelectItem value="never">Never expires</SelectItem>
                   <SelectItem value="30">30 days</SelectItem>
                   <SelectItem value="90">90 days</SelectItem>
                   <SelectItem value="365">1 year</SelectItem>

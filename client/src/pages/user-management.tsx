@@ -303,7 +303,7 @@ export default function UserManagement() {
                     <SelectValue placeholder="All Roles" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">All Roles</SelectItem>
+                    <SelectItem value="all">All Roles</SelectItem>
                     <SelectItem value="admin">Admin</SelectItem>
                     <SelectItem value="engineering_lead">Engineering Lead</SelectItem>
                     <SelectItem value="prompt_engineer">Prompt Engineer</SelectItem>

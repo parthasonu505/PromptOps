@@ -104,7 +104,7 @@ export function hasRole(user: User | null, roles: string[]): boolean {
   return user ? roles.includes(user.role) : false;
 }
 
-export function getAuthHeaders() {
+export function getAuthHeaders(): Record<string, string> | undefined {
   const token = localStorage.getItem(TOKEN_KEY);
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  return token ? { Authorization: `Bearer ${token}` } : undefined;
 }

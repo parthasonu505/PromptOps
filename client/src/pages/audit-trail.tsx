@@ -119,7 +119,7 @@ export default function AuditTrail() {
   };
 
   const filteredLogs = auditLogs.filter((log: AuditLog) => {
-    const matchesAction = !actionFilter || log.action === actionFilter;
+    const matchesAction = !actionFilter || actionFilter === "all" || log.action === actionFilter;
     const matchesSearch = !searchQuery || 
       log.user?.firstName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       log.user?.lastName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -267,7 +267,7 @@ export default function AuditTrail() {
                   <SelectValue placeholder="All Resources" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Resources</SelectItem>
+                  <SelectItem value="all">All Resources</SelectItem>
                   <SelectItem value="prompt">Prompts</SelectItem>
                   <SelectItem value="prompt_version">Prompt Versions</SelectItem>
                   <SelectItem value="user">Users</SelectItem>
@@ -281,7 +281,7 @@ export default function AuditTrail() {
                   <SelectValue placeholder="All Actions" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Actions</SelectItem>
+                  <SelectItem value="all">All Actions</SelectItem>
                   <SelectItem value="created">Created</SelectItem>
                   <SelectItem value="updated">Updated</SelectItem>
                   <SelectItem value="deleted">Deleted</SelectItem>

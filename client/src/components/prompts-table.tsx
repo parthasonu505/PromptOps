@@ -172,7 +172,7 @@ export function PromptsTable() {
                   <SelectValue placeholder="All Categories" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Categories</SelectItem>
+                  <SelectItem value="all">All Categories</SelectItem>
                   <SelectItem value="customer_support">Customer Support</SelectItem>
                   <SelectItem value="content_generation">Content Generation</SelectItem>
                   <SelectItem value="data_analysis">Data Analysis</SelectItem>
@@ -190,7 +190,7 @@ export function PromptsTable() {
                   <SelectValue placeholder="All Status" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Status</SelectItem>
+                  <SelectItem value="all">All Status</SelectItem>
                   <SelectItem value="approved">Approved</SelectItem>
                   <SelectItem value="pending_review">Pending Review</SelectItem>
                   <SelectItem value="draft">Draft</SelectItem>
@@ -207,7 +207,7 @@ export function PromptsTable() {
                   <SelectValue placeholder="All Environments" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Environments</SelectItem>
+                  <SelectItem value="all">All Environments</SelectItem>
                   <SelectItem value="production">Production</SelectItem>
                   <SelectItem value="staging">Staging</SelectItem>
                   <SelectItem value="development">Development</SelectItem>
@@ -269,7 +269,6 @@ export function PromptsTable() {
                     <Checkbox
                       checked={selectedPrompts.length === prompts.length && prompts.length > 0}
                       onCheckedChange={handleSelectAll}
-                      indeterminate={selectedPrompts.length > 0 && selectedPrompts.length < prompts.length}
                     />
                   </TableHead>
                   <TableHead>Name & Description</TableHead>
