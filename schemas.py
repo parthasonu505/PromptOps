@@ -1,0 +1,260 @@
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+
+
+# User schemas
+class UserBase(BaseModel):
+    username: str
+    email: str
+    role: str
+    first_name: str
+    last_name: str
+    is_active: bool = True
+
+
+class UserCreate(UserBase):
+    password: str
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    role: Optional[str] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
+
+class User(UserBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+
+class UserLoginResponse(BaseModel):
+    user: User
+    token: str
+
+
+# Prompt schemas
+class PromptBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    content: str
+    category: str
+    status: str
+    environment: str
+    access_level: str
+    variables: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class PromptCreate(PromptBase):
+    pass
+
+
+class PromptUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    status: Optional[str] = None
+    environment: Optional[str] = None
+    access_level: Optional[str] = None
+    variables: Optional[List[Dict[str, Any]]] = None
+
+
+class Prompt(PromptBase):
+    id: int
+    author_id: int
+    current_version_id: Optional[int] = None
+    usage_count: int = 0
+    rating: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Prompt Version schemas
+class PromptVersionBase(BaseModel):
+    prompt_id: int
+    version: str
+    content: str
+    changelog: Optional[str] = None
+    status: str = "draft"
+
+
+class PromptVersionCreate(PromptVersionBase):
+    pass
+
+
+class PromptVersionUpdate(BaseModel):
+    version: Optional[str] = None
+    content: Optional[str] = None
+    changelog: Optional[str] = None
+    status: Optional[str] = None
+
+
+class PromptVersion(PromptVersionBase):
+    id: int
+    author_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# LLM Provider schemas
+class LlmProviderBase(BaseModel):
+    name: str
+    display_name: str
+    base_url: str
+    api_key_required: bool = True
+    models: List[Dict[str, Any]] = Field(default_factory=list)
+    is_active: bool = True
+
+
+class LlmProviderCreate(LlmProviderBase):
+    pass
+
+
+class LlmProviderUpdate(BaseModel):
+    name: Optional[str] = None
+    display_name: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key_required: Optional[bool] = None
+    models: Optional[List[Dict[str, Any]]] = None
+    is_active: Optional[bool] = None
+
+
+class LlmProvider(LlmProviderBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# User LLM Config schemas
+class UserLlmConfigBase(BaseModel):
+    provider_id: int
+    api_key: str
+    is_active: bool = True
+
+
+class UserLlmConfigCreate(UserLlmConfigBase):
+    pass
+
+
+class UserLlmConfigUpdate(BaseModel):
+    api_key: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class UserLlmConfig(BaseModel):
+    id: int
+    user_id: int
+    provider_id: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Favorite schemas
+class FavoriteBase(BaseModel):
+    prompt_id: int
+
+
+class FavoriteCreate(FavoriteBase):
+    pass
+
+
+class Favorite(FavoriteBase):
+    id: int
+    user_id: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Prompt Comparison schemas
+class PromptComparisonBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    prompt_id: int
+    models: List[str]
+    input_data: Dict[str, Any]
+
+
+class PromptComparisonCreate(PromptComparisonBase):
+    pass
+
+
+class PromptComparisonUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    models: Optional[List[str]] = None
+    input_data: Optional[Dict[str, Any]] = None
+    results: Optional[Dict[str, Any]] = None
+
+
+class PromptComparison(PromptComparisonBase):
+    id: int
+    user_id: int
+    results: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Approval schemas
+class ApprovalBase(BaseModel):
+    prompt_id: int
+    version_id: int
+    requester_id: int
+    status: str
+    comments: Optional[str] = None
+
+
+class ApprovalCreate(ApprovalBase):
+    pass
+
+
+class ApprovalUpdate(BaseModel):
+    status: Optional[str] = None
+    comments: Optional[str] = None
+    approver_id: Optional[int] = None
+
+
+class Approval(ApprovalBase):
+    id: int
+    approver_id: Optional[int] = None
+    requested_at: datetime
+    reviewed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# Token schema
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

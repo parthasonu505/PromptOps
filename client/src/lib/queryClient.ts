@@ -21,7 +21,10 @@ export async function apiRequest(
     headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(url, {
+  // Convert relative URLs to absolute URLs pointing to FastAPI backend
+  const apiUrl = url.startsWith('/') ? `http://localhost:8000${url}` : url;
+
+  const res = await fetch(apiUrl, {
     method,
     headers,
     body: data ? JSON.stringify(data) : undefined,
@@ -41,7 +44,11 @@ export const getQueryFn: <T>(options: {
       ...getAuthHeaders(),
     };
 
-    const res = await fetch(queryKey[0] as string, {
+    // Convert relative URLs to absolute URLs pointing to FastAPI backend
+    const url = queryKey[0] as string;
+    const apiUrl = url.startsWith('/') ? `http://localhost:8000${url}` : url;
+
+    const res = await fetch(apiUrl, {
       headers,
     });
 
