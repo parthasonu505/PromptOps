@@ -21,8 +21,8 @@ export async function apiRequest(
     headers["Content-Type"] = "application/json";
   }
 
-  // Convert relative URLs to absolute URLs pointing to FastAPI backend
-  const apiUrl = url.startsWith('/') ? `http://localhost:8000${url}` : url;
+  // Use relative URLs to connect to the same server (Node.js on port 5000)
+  const apiUrl = url;
 
   const res = await fetch(apiUrl, {
     method,
@@ -44,9 +44,9 @@ export const getQueryFn: <T>(options: {
       ...getAuthHeaders(),
     };
 
-    // Convert relative URLs to absolute URLs pointing to FastAPI backend
+    // Use relative URLs to connect to the same server (Node.js on port 5000)
     const url = queryKey[0] as string;
-    const apiUrl = url.startsWith('/') ? `http://localhost:8000${url}` : url;
+    const apiUrl = url;
 
     const res = await fetch(apiUrl, {
       headers,
