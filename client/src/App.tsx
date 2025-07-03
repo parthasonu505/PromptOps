@@ -16,6 +16,8 @@ import Approvals from "@/pages/approvals";
 import UserManagement from "@/pages/user-management";
 import ApiSdk from "@/pages/api-sdk";
 import AuditTrail from "@/pages/audit-trail";
+import LLMComparison from "@/pages/llm-comparison";
+import LLMSettings from "@/pages/llm-settings";
 
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
@@ -38,6 +40,8 @@ function AuthenticatedRoutes() {
         <Route path="/" component={Dashboard} />
         <Route path="/version-control" component={VersionControl} />
         <Route path="/testing-sandbox" component={TestingSandbox} />
+        <Route path="/llm-comparison" component={LLMComparison} />
+        <Route path="/llm-settings" component={LLMSettings} />
         <Route path="/approvals" component={Approvals} />
         <Route path="/user-management" component={UserManagement} />
         <Route path="/api-sdk" component={ApiSdk} />

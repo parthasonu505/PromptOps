@@ -1,8 +1,12 @@
 import { 
   users, prompts, promptVersions, approvals, auditLogs, apiKeys,
+  llmProviders, userLlmConfigs, favorites, promptComparisons, promptExecutions, systemConfigs,
   type User, type InsertUser, type Prompt, type InsertPrompt,
   type PromptVersion, type InsertPromptVersion, type Approval, type InsertApproval,
-  type AuditLog, type InsertAuditLog, type ApiKey, type InsertApiKey
+  type AuditLog, type InsertAuditLog, type ApiKey, type InsertApiKey,
+  type LlmProvider, type InsertLlmProvider, type UserLlmConfig, type InsertUserLlmConfig,
+  type Favorite, type InsertFavorite, type PromptComparison, type InsertPromptComparison,
+  type PromptExecution, type InsertPromptExecution, type SystemConfig, type InsertSystemConfig
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, desc, and, or, ilike, count } from "drizzle-orm";
@@ -58,6 +62,43 @@ export interface IStorage {
   createApiKey(apiKey: InsertApiKey): Promise<ApiKey>;
   updateApiKey(id: number, apiKey: Partial<InsertApiKey>): Promise<ApiKey | undefined>;
   deleteApiKey(id: number): Promise<boolean>;
+
+  // LLM Providers
+  getLlmProvider(id: number): Promise<LlmProvider | undefined>;
+  getLlmProviders(): Promise<LlmProvider[]>;
+  createLlmProvider(provider: InsertLlmProvider): Promise<LlmProvider>;
+  updateLlmProvider(id: number, provider: Partial<InsertLlmProvider>): Promise<LlmProvider | undefined>;
+
+  // User LLM Configurations
+  getUserLlmConfig(userId: number, providerId: number): Promise<UserLlmConfig | undefined>;
+  getUserLlmConfigs(userId: number): Promise<UserLlmConfig[]>;
+  createUserLlmConfig(config: InsertUserLlmConfig): Promise<UserLlmConfig>;
+  updateUserLlmConfig(id: number, config: Partial<InsertUserLlmConfig>): Promise<UserLlmConfig | undefined>;
+  deleteUserLlmConfig(id: number): Promise<boolean>;
+
+  // Favorites
+  getFavorites(userId: number): Promise<Favorite[]>;
+  addFavorite(favorite: InsertFavorite): Promise<Favorite>;
+  removeFavorite(userId: number, promptId: number): Promise<boolean>;
+  isFavorite(userId: number, promptId: number): Promise<boolean>;
+
+  // Prompt Comparisons
+  getPromptComparison(id: number): Promise<PromptComparison | undefined>;
+  getPromptComparisons(userId: number): Promise<PromptComparison[]>;
+  createPromptComparison(comparison: InsertPromptComparison): Promise<PromptComparison>;
+  updatePromptComparison(id: number, comparison: Partial<InsertPromptComparison>): Promise<PromptComparison | undefined>;
+  deletePromptComparison(id: number): Promise<boolean>;
+
+  // Prompt Executions
+  getPromptExecution(id: number): Promise<PromptExecution | undefined>;
+  getPromptExecutions(filters?: { userId?: number; promptId?: number; modelId?: string }): Promise<PromptExecution[]>;
+  createPromptExecution(execution: InsertPromptExecution): Promise<PromptExecution>;
+
+  // System Configuration
+  getSystemConfig(key: string): Promise<SystemConfig | undefined>;
+  getSystemConfigs(): Promise<SystemConfig[]>;
+  setSystemConfig(config: InsertSystemConfig): Promise<SystemConfig>;
+  updateSystemConfig(key: string, value: any): Promise<SystemConfig | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -318,6 +359,198 @@ export class DatabaseStorage implements IStorage {
   async deleteApiKey(id: number): Promise<boolean> {
     const result = await db.delete(apiKeys).where(eq(apiKeys.id, id));
     return result.rowCount > 0;
+  }
+
+  // LLM Providers
+  async getLlmProvider(id: number): Promise<LlmProvider | undefined> {
+    const [provider] = await db.select().from(llmProviders).where(eq(llmProviders.id, id));
+    return provider || undefined;
+  }
+
+  async getLlmProviders(): Promise<LlmProvider[]> {
+    return db.select().from(llmProviders).where(eq(llmProviders.isActive, true));
+  }
+
+  async createLlmProvider(insertProvider: InsertLlmProvider): Promise<LlmProvider> {
+    const [provider] = await db.insert(llmProviders).values(insertProvider).returning();
+    return provider;
+  }
+
+  async updateLlmProvider(id: number, updateProvider: Partial<InsertLlmProvider>): Promise<LlmProvider | undefined> {
+    const [provider] = await db
+      .update(llmProviders)
+      .set(updateProvider)
+      .where(eq(llmProviders.id, id))
+      .returning();
+    return provider || undefined;
+  }
+
+  // User LLM Configurations
+  async getUserLlmConfig(userId: number, providerId: number): Promise<UserLlmConfig | undefined> {
+    const [config] = await db
+      .select()
+      .from(userLlmConfigs)
+      .where(and(eq(userLlmConfigs.userId, userId), eq(userLlmConfigs.providerId, providerId)));
+    return config || undefined;
+  }
+
+  async getUserLlmConfigs(userId: number): Promise<UserLlmConfig[]> {
+    return db
+      .select()
+      .from(userLlmConfigs)
+      .where(and(eq(userLlmConfigs.userId, userId), eq(userLlmConfigs.isActive, true)));
+  }
+
+  async createUserLlmConfig(insertConfig: InsertUserLlmConfig): Promise<UserLlmConfig> {
+    const [config] = await db.insert(userLlmConfigs).values(insertConfig).returning();
+    return config;
+  }
+
+  async updateUserLlmConfig(id: number, updateConfig: Partial<InsertUserLlmConfig>): Promise<UserLlmConfig | undefined> {
+    const [config] = await db
+      .update(userLlmConfigs)
+      .set(updateConfig)
+      .where(eq(userLlmConfigs.id, id))
+      .returning();
+    return config || undefined;
+  }
+
+  async deleteUserLlmConfig(id: number): Promise<boolean> {
+    const result = await db.delete(userLlmConfigs).where(eq(userLlmConfigs.id, id));
+    return result.rowCount > 0;
+  }
+
+  // Favorites
+  async getFavorites(userId: number): Promise<Favorite[]> {
+    return db
+      .select()
+      .from(favorites)
+      .where(eq(favorites.userId, userId))
+      .orderBy(desc(favorites.createdAt));
+  }
+
+  async addFavorite(insertFavorite: InsertFavorite): Promise<Favorite> {
+    const [favorite] = await db.insert(favorites).values(insertFavorite).returning();
+    return favorite;
+  }
+
+  async removeFavorite(userId: number, promptId: number): Promise<boolean> {
+    const result = await db
+      .delete(favorites)
+      .where(and(eq(favorites.userId, userId), eq(favorites.promptId, promptId)));
+    return result.rowCount > 0;
+  }
+
+  async isFavorite(userId: number, promptId: number): Promise<boolean> {
+    const [favorite] = await db
+      .select()
+      .from(favorites)
+      .where(and(eq(favorites.userId, userId), eq(favorites.promptId, promptId)));
+    return !!favorite;
+  }
+
+  // Prompt Comparisons
+  async getPromptComparison(id: number): Promise<PromptComparison | undefined> {
+    const [comparison] = await db.select().from(promptComparisons).where(eq(promptComparisons.id, id));
+    return comparison || undefined;
+  }
+
+  async getPromptComparisons(userId: number): Promise<PromptComparison[]> {
+    return db
+      .select()
+      .from(promptComparisons)
+      .where(eq(promptComparisons.userId, userId))
+      .orderBy(desc(promptComparisons.createdAt));
+  }
+
+  async createPromptComparison(insertComparison: InsertPromptComparison): Promise<PromptComparison> {
+    const [comparison] = await db.insert(promptComparisons).values(insertComparison).returning();
+    return comparison;
+  }
+
+  async updatePromptComparison(id: number, updateComparison: Partial<InsertPromptComparison>): Promise<PromptComparison | undefined> {
+    const [comparison] = await db
+      .update(promptComparisons)
+      .set(updateComparison)
+      .where(eq(promptComparisons.id, id))
+      .returning();
+    return comparison || undefined;
+  }
+
+  async deletePromptComparison(id: number): Promise<boolean> {
+    const result = await db.delete(promptComparisons).where(eq(promptComparisons.id, id));
+    return result.rowCount > 0;
+  }
+
+  // Prompt Executions
+  async getPromptExecution(id: number): Promise<PromptExecution | undefined> {
+    const [execution] = await db.select().from(promptExecutions).where(eq(promptExecutions.id, id));
+    return execution || undefined;
+  }
+
+  async getPromptExecutions(filters?: { userId?: number; promptId?: number; modelId?: string }): Promise<PromptExecution[]> {
+    let query = db.select().from(promptExecutions);
+    
+    const conditions = [];
+    
+    if (filters?.userId) {
+      conditions.push(eq(promptExecutions.userId, filters.userId));
+    }
+    
+    if (filters?.promptId) {
+      conditions.push(eq(promptExecutions.promptId, filters.promptId));
+    }
+    
+    if (filters?.modelId) {
+      conditions.push(eq(promptExecutions.modelId, filters.modelId));
+    }
+    
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions));
+    }
+    
+    return query.orderBy(desc(promptExecutions.createdAt));
+  }
+
+  async createPromptExecution(insertExecution: InsertPromptExecution): Promise<PromptExecution> {
+    const [execution] = await db.insert(promptExecutions).values(insertExecution).returning();
+    return execution;
+  }
+
+  // System Configuration
+  async getSystemConfig(key: string): Promise<SystemConfig | undefined> {
+    const [config] = await db.select().from(systemConfigs).where(eq(systemConfigs.key, key));
+    return config || undefined;
+  }
+
+  async getSystemConfigs(): Promise<SystemConfig[]> {
+    return db.select().from(systemConfigs).orderBy(systemConfigs.key);
+  }
+
+  async setSystemConfig(insertConfig: InsertSystemConfig): Promise<SystemConfig> {
+    const [config] = await db
+      .insert(systemConfigs)
+      .values(insertConfig)
+      .onConflictDoUpdate({
+        target: systemConfigs.key,
+        set: {
+          value: insertConfig.value,
+          description: insertConfig.description,
+          updatedBy: insertConfig.updatedBy,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+    return config;
+  }
+
+  async updateSystemConfig(key: string, value: any): Promise<SystemConfig | undefined> {
+    const [config] = await db
+      .update(systemConfigs)
+      .set({ value, updatedAt: new Date() })
+      .where(eq(systemConfigs.key, key))
+      .returning();
+    return config || undefined;
   }
 }
 

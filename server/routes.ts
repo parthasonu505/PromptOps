@@ -5,8 +5,11 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { 
   insertUserSchema, insertPromptSchema, insertPromptVersionSchema, 
-  insertApprovalSchema, insertApiKeySchema 
+  insertApprovalSchema, insertApiKeySchema, insertLlmProviderSchema,
+  insertUserLlmConfigSchema, insertFavoriteSchema, insertPromptComparisonSchema,
+  insertPromptExecutionSchema
 } from "@shared/schema";
+import { llmService } from "./llm-service";
 
 // Simple session store for demo purposes
 const sessions = new Map<string, { userId: number; role: string }>();
@@ -483,6 +486,323 @@ export async function registerRoutes(app: Express): Promise<Server> {
         variables: prompt.variables,
         version: prompt.currentVersionId,
       });
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // LLM Provider routes
+  app.get("/api/llm-providers", requireAuth, async (req, res) => {
+    try {
+      const providers = await storage.getLlmProviders();
+      res.json(providers);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/llm-providers", requireAuth, requireRole(["admin"]), async (req, res) => {
+    try {
+      const providerData = insertLlmProviderSchema.parse(req.body);
+      const provider = await storage.createLlmProvider(providerData);
+      res.status(201).json(provider);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // User LLM Configuration routes
+  app.get("/api/llm-configs", requireAuth, async (req, res) => {
+    try {
+      const configs = await storage.getUserLlmConfigs(req.user.userId);
+      res.json(configs.map(config => ({
+        id: config.id,
+        providerId: config.providerId,
+        isActive: config.isActive,
+        createdAt: config.createdAt,
+        updatedAt: config.updatedAt,
+      })));
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/llm-configs", requireAuth, async (req, res) => {
+    try {
+      const { providerId, apiKey } = req.body;
+      const encryptedApiKey = llmService.encryptApiKey(apiKey);
+      
+      const config = await storage.createUserLlmConfig({
+        userId: req.user.userId,
+        providerId,
+        apiKey: encryptedApiKey,
+      });
+
+      res.status(201).json({
+        id: config.id,
+        providerId: config.providerId,
+        isActive: config.isActive,
+        createdAt: config.createdAt,
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.delete("/api/llm-configs/:id", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const success = await storage.deleteUserLlmConfig(id);
+      
+      if (!success) {
+        return res.status(404).json({ message: "Configuration not found" });
+      }
+
+      res.json({ message: "Configuration deleted successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Favorites routes
+  app.get("/api/favorites", requireAuth, async (req, res) => {
+    try {
+      const favorites = await storage.getFavorites(req.user.userId);
+      res.json(favorites);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/favorites", requireAuth, async (req, res) => {
+    try {
+      const { promptId } = req.body;
+      const favorite = await storage.addFavorite({
+        userId: req.user.userId,
+        promptId,
+      });
+
+      res.status(201).json(favorite);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.delete("/api/favorites/:promptId", requireAuth, async (req, res) => {
+    try {
+      const promptId = parseInt(req.params.promptId);
+      const success = await storage.removeFavorite(req.user.userId, promptId);
+      
+      if (!success) {
+        return res.status(404).json({ message: "Favorite not found" });
+      }
+
+      res.json({ message: "Favorite removed successfully" });
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Prompt Testing & Execution routes
+  app.post("/api/prompts/:id/test", requireAuth, async (req, res) => {
+    try {
+      const promptId = parseInt(req.params.id);
+      const { modelId, providerId, inputData, options } = req.body;
+
+      const prompt = await storage.getPrompt(promptId);
+      if (!prompt) {
+        return res.status(404).json({ message: "Prompt not found" });
+      }
+
+      const userConfig = await storage.getUserLlmConfig(req.user.userId, providerId);
+      if (!userConfig) {
+        return res.status(400).json({ message: "LLM configuration not found" });
+      }
+
+      // Process prompt with variables
+      let processedContent = prompt.content;
+      if (inputData && typeof inputData === 'object') {
+        Object.entries(inputData).forEach(([key, value]) => {
+          processedContent = processedContent.replace(
+            new RegExp(`{{${key}}}`, 'g'), 
+            String(value)
+          );
+        });
+      }
+
+      const result = await llmService.sendPrompt(
+        processedContent,
+        providerId,
+        modelId,
+        userConfig.apiKey,
+        options
+      );
+
+      // Store execution record
+      await storage.createPromptExecution({
+        userId: req.user.userId,
+        promptId,
+        modelId,
+        inputData: inputData || {},
+        response: result.response,
+        responseTime: result.responseTime,
+        tokens: result.tokens,
+        cost: result.cost,
+        success: result.success,
+        error: result.error,
+      });
+
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Prompt Comparison routes
+  app.get("/api/comparisons", requireAuth, async (req, res) => {
+    try {
+      const comparisons = await storage.getPromptComparisons(req.user.userId);
+      res.json(comparisons);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.post("/api/comparisons", requireAuth, async (req, res) => {
+    try {
+      const { name, description, promptId, models, inputData } = req.body;
+      
+      const prompt = await storage.getPrompt(promptId);
+      if (!prompt) {
+        return res.status(404).json({ message: "Prompt not found" });
+      }
+
+      // Process prompt with variables
+      let processedContent = prompt.content;
+      if (inputData && typeof inputData === 'object') {
+        Object.entries(inputData).forEach(([key, value]) => {
+          processedContent = processedContent.replace(
+            new RegExp(`{{${key}}}`, 'g'), 
+            String(value)
+          );
+        });
+      }
+
+      // Get user's LLM configurations
+      const userConfigs = await storage.getUserLlmConfigs(req.user.userId);
+      const modelConfigs = [];
+
+      for (const modelId of models) {
+        // Extract provider from model ID (format: provider:model)
+        const [providerId] = modelId.split(':');
+        const config = userConfigs.find(c => c.providerId.toString() === providerId);
+        
+        if (config) {
+          modelConfigs.push({
+            providerId,
+            modelId,
+            apiKey: config.apiKey,
+          });
+        }
+      }
+
+      if (modelConfigs.length === 0) {
+        return res.status(400).json({ message: "No valid LLM configurations found" });
+      }
+
+      // Run comparison across models
+      const results = await llmService.comparePrompts(processedContent, modelConfigs);
+
+      const comparison = await storage.createPromptComparison({
+        userId: req.user.userId,
+        name,
+        description,
+        promptId,
+        models,
+        inputData: inputData || {},
+        results,
+      });
+
+      res.status(201).json(comparison);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.get("/api/comparisons/:id", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const comparison = await storage.getPromptComparison(id);
+      
+      if (!comparison || comparison.userId !== req.user.userId) {
+        return res.status(404).json({ message: "Comparison not found" });
+      }
+
+      res.json(comparison);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  app.put("/api/comparisons/:id/score", requireAuth, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const { modelId, score, notes } = req.body;
+
+      const comparison = await storage.getPromptComparison(id);
+      if (!comparison || comparison.userId !== req.user.userId) {
+        return res.status(404).json({ message: "Comparison not found" });
+      }
+
+      // Update the score for the specific model result
+      const updatedResults = comparison.results.map(result => 
+        result.modelId === modelId 
+          ? { ...result, score, notes }
+          : result
+      );
+
+      const updatedComparison = await storage.updatePromptComparison(id, {
+        results: updatedResults,
+      });
+
+      res.json(updatedComparison);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Execution History routes
+  app.get("/api/executions", requireAuth, async (req, res) => {
+    try {
+      const { promptId, modelId } = req.query;
+      const executions = await storage.getPromptExecutions({
+        userId: req.user.userId,
+        promptId: promptId ? parseInt(promptId as string) : undefined,
+        modelId: modelId as string,
+      });
+      res.json(executions);
+    } catch (error) {
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+  // Analytics routes
+  app.get("/api/analytics/usage", requireAuth, async (req, res) => {
+    try {
+      const executions = await storage.getPromptExecutions({ userId: req.user.userId });
+      
+      const analytics = {
+        totalExecutions: executions.length,
+        successRate: executions.filter(e => e.success).length / executions.length * 100,
+        averageResponseTime: executions.reduce((sum, e) => sum + e.responseTime, 0) / executions.length,
+        totalCost: executions.reduce((sum, e) => sum + e.cost, 0),
+        modelUsage: executions.reduce((acc, e) => {
+          acc[e.modelId] = (acc[e.modelId] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>),
+      };
+
+      res.json(analytics);
     } catch (error) {
       res.status(500).json({ message: "Internal server error" });
     }

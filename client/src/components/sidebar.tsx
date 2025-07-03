@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { 
   Terminal, Code, GitBranch, TestTube, CheckCircle, 
-  Users, Key, FileText, Moon, Sun 
+  Users, Key, FileText, Moon, Sun, Brain, Settings 
 } from "lucide-react";
 
 export function Sidebar() {
@@ -93,6 +93,28 @@ export function Sidebar() {
             }`}>
               <TestTube className="mr-3 h-4 w-4" />
               Testing Sandbox
+            </a>
+          </Link>
+
+          <Link href="/llm-comparison">
+            <a className={`group flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+              isActive("/llm-comparison") 
+                ? "text-sidebar-primary bg-sidebar-accent" 
+                : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+            }`}>
+              <Brain className="mr-3 h-4 w-4" />
+              LLM Comparison
+            </a>
+          </Link>
+
+          <Link href="/llm-settings">
+            <a className={`group flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+              isActive("/llm-settings") 
+                ? "text-sidebar-primary bg-sidebar-accent" 
+                : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+            }`}>
+              <Settings className="mr-3 h-4 w-4" />
+              LLM Settings
             </a>
           </Link>
 
