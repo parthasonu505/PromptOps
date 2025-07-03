@@ -1,110 +1,68 @@
-import { useState, useEffect } from "react";
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
-export interface User {
+interface User {
   id: number;
   username: string;
   email: string;
   role: string;
-  firstName: string;
-  lastName: string;
+  firstName?: string;
+  lastName?: string;
+  isActive: boolean;
 }
 
-export interface AuthState {
-  user: User | null;
+interface AuthState {
   token: string | null;
-  isLoading: boolean;
+  user: User | null;
+  login: (token: string, user: User) => void;
+  logout: () => void;
+  isAuthenticated: () => boolean;
 }
 
-const TOKEN_KEY = "promptops_token";
-
-export function useAuth() {
-  const [authState, setAuthState] = useState<AuthState>({
-    user: null,
-    token: localStorage.getItem(TOKEN_KEY),
-    isLoading: true,
-  });
-
-  useEffect(() => {
-    const initAuth = async () => {
-      const token = localStorage.getItem(TOKEN_KEY);
-      if (token) {
-        try {
-          const response = await fetch("/api/auth/me", {
-            headers: {
-              Authorization: `Bearer ${token}`,
-            },
-          });
-
-          if (response.ok) {
-            const user = await response.json();
-            setAuthState({ user, token, isLoading: false });
-          } else {
-            localStorage.removeItem(TOKEN_KEY);
-            setAuthState({ user: null, token: null, isLoading: false });
-          }
-        } catch (error) {
-          localStorage.removeItem(TOKEN_KEY);
-          setAuthState({ user: null, token: null, isLoading: false });
-        }
-      } else {
-        setAuthState({ user: null, token: null, isLoading: false });
-      }
-    };
-
-    initAuth();
-  }, []);
-
-  const login = async (username: string, password: string) => {
-    const response = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set, get) => ({
+      token: null,
+      user: null,
+      login: (token: string, user: User) => {
+        set({ token, user });
       },
-      body: JSON.stringify({ username, password }),
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || "Login failed");
+      logout: () => {
+        set({ token: null, user: null });
+      },
+      isAuthenticated: () => {
+        const { token } = get();
+        return !!token;
+      },
+    }),
+    {
+      name: 'auth-storage',
     }
+  )
+);
 
-    const { token, user } = await response.json();
-    localStorage.setItem(TOKEN_KEY, token);
-    setAuthState({ user, token, isLoading: false });
-    return { user, token };
-  };
-
-  const logout = async () => {
-    const token = localStorage.getItem(TOKEN_KEY);
-    if (token) {
-      try {
-        await fetch("/api/auth/logout", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
-      } catch (error) {
-        // Ignore logout errors
-      }
-    }
-
-    localStorage.removeItem(TOKEN_KEY);
-    setAuthState({ user: null, token: null, isLoading: false });
-  };
-
+// Hook for components to use auth state
+export const useAuth = () => {
+  const { token, user, login, logout, isAuthenticated } = useAuthStore();
+  
   return {
-    ...authState,
+    token,
+    user,
     login,
     logout,
+    isAuthenticated: isAuthenticated(),
+    isLoading: false, // We're not doing any async loading here
   };
-}
+};
 
-export function hasRole(user: User | null, roles: string[]): boolean {
-  return user ? roles.includes(user.role) : false;
-}
+// Helper function to check if user has specific role
+export const hasRole = (user: User | null, roles: string[]): boolean => {
+  if (!user) return false;
+  return roles.includes(user.role);
+};
 
-export function getAuthHeaders(): Record<string, string> | undefined {
-  const token = localStorage.getItem(TOKEN_KEY);
-  return token ? { Authorization: `Bearer ${token}` } : undefined;
-}
+// Get authorization headers for API calls
+export const getAuthHeaders = (): Record<string, string> => {
+  const { token } = useAuthStore.getState();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};

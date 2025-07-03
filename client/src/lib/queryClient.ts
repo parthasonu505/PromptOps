@@ -1,4 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { getAuthHeaders } from "./auth";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -12,15 +13,12 @@ export async function apiRequest(
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
-  const token = localStorage.getItem("promptops_token");
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    ...getAuthHeaders(),
+  };
   
   if (data) {
     headers["Content-Type"] = "application/json";
-  }
-  
-  if (token) {
-    headers["Authorization"] = `Bearer ${token}`;
   }
 
   const res = await fetch(url, {
@@ -39,12 +37,9 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const token = localStorage.getItem("promptops_token");
-    const headers: Record<string, string> = {};
-    
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
+    const headers: Record<string, string> = {
+      ...getAuthHeaders(),
+    };
 
     const res = await fetch(queryKey[0] as string, {
       headers,
