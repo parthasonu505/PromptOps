@@ -303,6 +303,73 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // LLM Providers endpoint
+  app.get('/api/llm-providers', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const providers = llmService.getProviders();
+      res.json(providers);
+    } catch (error) {
+      console.error("Failed to fetch LLM providers:", error);
+      res.status(500).json({ message: "Failed to fetch LLM providers" });
+    }
+  });
+
+  // Test LLM endpoint for playground
+  app.post('/api/llm/test', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const { provider, modelId, prompt, options = {} } = req.body;
+
+      if (!provider || !modelId || !prompt) {
+        return res.status(400).json({ 
+          message: "Provider, modelId, and prompt are required" 
+        });
+      }
+
+      // For GitHub Models, we need to get the user's GitHub token
+      let apiKey = '';
+      
+      if (provider === 'github_models') {
+        // For GitHub Models, we expect the user to have a GitHub token
+        // This would be configured in their environment or provided via a config
+        apiKey = process.env.GITHUB_TOKEN || '';
+        
+        if (!apiKey) {
+          return res.status(400).json({ 
+            message: "GitHub token is required for GitHub Models. Please set GITHUB_TOKEN environment variable." 
+          });
+        }
+      } else {
+        // For other providers, get the user's API key from their config
+        const userConfigs = await storage.getUserLlmConfigs(req.user.id);
+        const config = userConfigs.find(c => c.provider?.name === provider && c.isActive);
+        
+        if (!config) {
+          return res.status(400).json({ 
+            message: `No active configuration found for ${provider}` 
+          });
+        }
+        
+        apiKey = config.apiKey;
+      }
+
+      const result = await llmService.sendPrompt(
+        prompt,
+        provider,
+        modelId,
+        apiKey,
+        options
+      );
+
+      res.json(result);
+    } catch (error) {
+      console.error("Failed to test LLM prompt:", error);
+      res.status(500).json({ 
+        message: "Failed to test prompt",
+        error: error instanceof Error ? error.message : "Unknown error"
+      });
+    }
+  });
+
   // Prompt Comparison routes
   app.post('/api/prompt-comparisons', requireAuth, async (req: AuthenticatedRequest, res) => {
     try {

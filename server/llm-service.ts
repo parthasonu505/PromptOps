@@ -1,5 +1,6 @@
 import CryptoJS from 'crypto-js';
 import { LlmProvider, UserLlmConfig } from '@shared/schema';
+import { GitHubModelsProvider } from './github-models-provider';
 
 // LLM Response interface
 export interface LLMResponse {
@@ -319,6 +320,7 @@ export class LLMService {
     this.providers.set('openai', new OpenAIProvider());
     this.providers.set('anthropic', new AnthropicProvider());
     this.providers.set('gemini', new GeminiProvider());
+    this.providers.set('github_models', new GitHubModelsProvider());
   }
 
   // Encrypt API key for storage
@@ -404,6 +406,7 @@ export class LLMService {
       openai: 'OpenAI',
       anthropic: 'Anthropic',
       gemini: 'Google Gemini',
+      github_models: 'GitHub Models',
     };
     return names[providerName] || providerName;
   }
@@ -413,6 +416,7 @@ export class LLMService {
       openai: 'https://api.openai.com/v1',
       anthropic: 'https://api.anthropic.com/v1',
       gemini: 'https://generativelanguage.googleapis.com/v1beta',
+      github_models: 'https://models.github.ai',
     };
     return urls[providerName] || '';
   }

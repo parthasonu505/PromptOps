@@ -19,6 +19,7 @@ import AuditTrail from "@/pages/audit-trail";
 import LLMComparison from "@/pages/llm-comparison";
 import LLMSettings from "@/pages/llm-settings";
 import GitHubSettings from "@/pages/github-settings";
+import GitHubModelsPlayground from "@/pages/github-models-playground";
 
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
@@ -48,6 +49,7 @@ function AuthenticatedRoutes() {
         <Route path="/api-sdk" component={ApiSdk} />
         <Route path="/audit-trail" component={AuditTrail} />
         <Route path="/github-settings" component={GitHubSettings} />
+        <Route path="/github-models" component={GitHubModelsPlayground} />
         <Route component={NotFound} />
       </Switch>
     </AppShell>
