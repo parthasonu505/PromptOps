@@ -137,6 +137,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Prompt Version routes
+  app.get('/api/prompt-versions/:promptId', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const promptId = parseInt(req.params.promptId);
+      const versions = await storage.getPromptVersions(promptId);
+      res.json(versions);
+    } catch (error) {
+      console.error("Failed to fetch prompt versions:", error);
+      res.status(500).json({ message: "Failed to fetch prompt versions" });
+    }
+  });
+
+  app.post('/api/prompt-versions', requireAuth, requireRole(['prompt_engineer', 'engineering_lead', 'admin']), async (req: AuthenticatedRequest, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: "User not authenticated" });
+      }
+
+      const versionData = insertPromptVersionSchema.parse({
+        ...req.body,
+        authorId: req.user.id,
+        status: req.body.status || 'draft'
+      });
+
+      const version = await storage.createPromptVersion(versionData);
+      res.status(201).json(version);
+    } catch (error) {
+      console.error("Failed to create prompt version:", error);
+      res.status(500).json({ message: "Failed to create prompt version" });
+    }
+  });
+
+  app.put('/api/prompt-versions/:id', requireAuth, requireRole(['prompt_engineer', 'engineering_lead', 'admin']), async (req: AuthenticatedRequest, res) => {
+    try {
+      const versionId = parseInt(req.params.id);
+      const updateData = insertPromptVersionSchema.partial().parse(req.body);
+
+      const version = await storage.updatePromptVersion(versionId, updateData);
+      
+      if (!version) {
+        return res.status(404).json({ message: "Prompt version not found" });
+      }
+
+      res.json(version);
+    } catch (error) {
+      console.error("Failed to update prompt version:", error);
+      res.status(500).json({ message: "Failed to update prompt version" });
+    }
+  });
+
   // LLM Provider routes
   app.get('/api/llm-providers', requireAuth, async (req, res) => {
     try {
