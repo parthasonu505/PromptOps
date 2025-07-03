@@ -7,9 +7,9 @@ import { Code, CheckCircle, Clock, GitBranch } from "lucide-react";
 
 export default function Dashboard() {
   const { data: stats } = useQuery({
-    queryKey: ["/api/prompts/stats"],
+    queryKey: ["/api/stats"],
     queryFn: async () => {
-      const response = await fetch("/api/prompts/stats", {
+      const response = await fetch("/api/stats", {
         headers: getAuthHeaders(),
       });
       if (!response.ok) {

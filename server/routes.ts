@@ -14,8 +14,22 @@ import {
   loginUser, 
   type AuthenticatedRequest 
 } from "./auth";
+import { GitHubIntegration } from "./github-integration";
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // GitHub Integration setup
+  let githubIntegration: GitHubIntegration | null = null;
+
+  // Initialize GitHub integration if configured
+  if (process.env.GITHUB_TOKEN && process.env.GITHUB_OWNER && process.env.GITHUB_REPO) {
+    githubIntegration = new GitHubIntegration({
+      token: process.env.GITHUB_TOKEN,
+      owner: process.env.GITHUB_OWNER,
+      repo: process.env.GITHUB_REPO,
+      branch: process.env.GITHUB_BRANCH || 'main'
+    });
+    console.log('GitHub integration initialized');
+  }
 
   // Authentication routes
   app.post('/api/auth/login', async (req, res) => {
@@ -80,6 +94,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
 
       const prompt = await storage.createPrompt(promptData);
+      
+      // Auto-sync to GitHub if configured
+      if (githubIntegration) {
+        try {
+          await githubIntegration.savePrompt(prompt);
+          console.log(`Prompt ${prompt.id} automatically synced to GitHub`);
+        } catch (githubError) {
+          console.error(`Failed to auto-sync prompt ${prompt.id} to GitHub:`, githubError);
+          // Don't fail the request, just log the error
+        }
+      }
+      
       res.status(201).json(prompt);
     } catch (error) {
       console.error("Failed to create prompt:", error);
@@ -112,6 +138,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       if (!prompt) {
         return res.status(404).json({ message: "Prompt not found" });
+      }
+
+      // Auto-sync to GitHub if configured
+      if (githubIntegration) {
+        try {
+          await githubIntegration.savePrompt(prompt);
+          console.log(`Prompt ${prompt.id} update automatically synced to GitHub`);
+        } catch (githubError) {
+          console.error(`Failed to auto-sync prompt ${prompt.id} update to GitHub:`, githubError);
+          // Don't fail the request, just log the error
+        }
       }
 
       res.json(prompt);
@@ -413,6 +450,113 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Failed to fetch stats:", error);
       res.status(500).json({ message: "Failed to fetch stats" });
+    }
+  });
+
+  // GitHub Integration endpoints
+
+  // GitHub configuration endpoint
+  app.get('/api/github/config', requireAuth, requireRole(['admin']), async (req, res) => {
+    try {
+      const config = {
+        enabled: !!githubIntegration,
+        owner: process.env.GITHUB_OWNER || null,
+        repo: process.env.GITHUB_REPO || null,
+        branch: process.env.GITHUB_BRANCH || 'main'
+      };
+      res.json(config);
+    } catch (error) {
+      console.error("Failed to get GitHub config:", error);
+      res.status(500).json({ message: "Failed to get GitHub configuration" });
+    }
+  });
+
+  // Test GitHub connection
+  app.post('/api/github/test', requireAuth, requireRole(['admin']), async (req, res) => {
+    try {
+      if (!githubIntegration) {
+        return res.status(400).json({ message: "GitHub integration not configured" });
+      }
+
+      const connected = await githubIntegration.testConnection();
+      const repoInfo = connected ? await githubIntegration.getRepoInfo() : null;
+
+      res.json({
+        connected,
+        repoInfo
+      });
+    } catch (error) {
+      console.error("Failed to test GitHub connection:", error);
+      res.status(500).json({ message: "Failed to test GitHub connection" });
+    }
+  });
+
+  // Initialize GitHub repository
+  app.post('/api/github/initialize', requireAuth, requireRole(['admin']), async (req, res) => {
+    try {
+      if (!githubIntegration) {
+        return res.status(400).json({ message: "GitHub integration not configured" });
+      }
+
+      await githubIntegration.initializeRepository();
+      res.json({ message: "GitHub repository initialized successfully" });
+    } catch (error) {
+      console.error("Failed to initialize GitHub repository:", error);
+      res.status(500).json({ message: "Failed to initialize GitHub repository" });
+    }
+  });
+
+  // Manually sync a prompt to GitHub
+  app.post('/api/github/sync/prompt/:id', requireAuth, requireRole(['admin', 'engineering_lead']), async (req, res) => {
+    try {
+      if (!githubIntegration) {
+        return res.status(400).json({ message: "GitHub integration not configured" });
+      }
+
+      const promptId = parseInt(req.params.id);
+      const prompt = await storage.getPrompt(promptId);
+      
+      if (!prompt) {
+        return res.status(404).json({ message: "Prompt not found" });
+      }
+
+      await githubIntegration.savePrompt(prompt);
+      res.json({ message: `Prompt ${promptId} synced to GitHub successfully` });
+    } catch (error) {
+      console.error("Failed to sync prompt to GitHub:", error);
+      res.status(500).json({ message: "Failed to sync prompt to GitHub" });
+    }
+  });
+
+  // Sync all prompts to GitHub
+  app.post('/api/github/sync/all', requireAuth, requireRole(['admin']), async (req, res) => {
+    try {
+      if (!githubIntegration) {
+        return res.status(400).json({ message: "GitHub integration not configured" });
+      }
+
+      const prompts = await storage.getPrompts();
+      let synced = 0;
+      let errors = 0;
+
+      for (const prompt of prompts) {
+        try {
+          await githubIntegration.savePrompt(prompt);
+          synced++;
+        } catch (error) {
+          console.error(`Failed to sync prompt ${prompt.id}:`, error);
+          errors++;
+        }
+      }
+
+      res.json({ 
+        message: `Sync completed: ${synced} prompts synced, ${errors} errors`,
+        synced,
+        errors
+      });
+    } catch (error) {
+      console.error("Failed to sync all prompts to GitHub:", error);
+      res.status(500).json({ message: "Failed to sync all prompts to GitHub" });
     }
   });
 
