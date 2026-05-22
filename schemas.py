@@ -109,7 +109,91 @@ class PromptVersionUpdate(BaseModel):
 class PromptVersion(PromptVersionBase):
     id: int
     author_id: int
+    eval_status: str = "none"
+    eval_score: Optional[int] = None
     created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Eval schemas
+EVAL_TYPES = {"prompt_contains", "prompt_regex", "output_contains", "output_regex", "llm_judge"}
+
+
+class EvalTestCase(BaseModel):
+    """A single test case within an eval suite."""
+    id: str
+    name: str
+    input_variables: Dict[str, str] = Field(default_factory=dict)
+    # For output_* and llm_judge, the user message to send after the system prompt
+    test_input: Optional[str] = None
+    eval_type: str          # see EVAL_TYPES
+    expected: Optional[str] = None   # for *_contains / *_regex
+    rubric: Optional[str] = None     # for llm_judge: criteria the response must satisfy
+
+
+class EvalTestResult(BaseModel):
+    test_case_id: str
+    test_case_name: str
+    passed: bool
+    actual: Optional[str] = None
+    expected: Optional[str] = None
+    error: Optional[str] = None
+
+
+class PromptEvalCreate(BaseModel):
+    prompt_id: int
+    name: str
+    description: Optional[str] = None
+    test_cases: List[EvalTestCase]
+    pass_threshold: int = 100     # % of cases that must pass (0-100)
+    judge_provider: Optional[str] = None
+    judge_model: Optional[str] = None
+
+
+class PromptEvalUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    test_cases: Optional[List[EvalTestCase]] = None
+    pass_threshold: Optional[int] = None
+    judge_provider: Optional[str] = None
+    judge_model: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PromptEvalResponse(BaseModel):
+    id: int
+    prompt_id: int
+    name: str
+    description: Optional[str] = None
+    test_cases: List[EvalTestCase]
+    pass_threshold: int
+    judge_provider: Optional[str] = None
+    judge_model: Optional[str] = None
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EvalRunTrigger(BaseModel):
+    version_id: int
+    # If the eval suite uses LLM-based checks, supply the encrypted API key
+    # from the user's configured LLM provider (retrieved via /api/user-llm-configs).
+    llm_config_id: Optional[int] = None
+
+
+class EvalRunResponse(BaseModel):
+    id: int
+    eval_id: int
+    version_id: int
+    status: str
+    score: Optional[int] = None
+    results: Optional[List[EvalTestResult]] = None
+    started_at: datetime
+    completed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -299,6 +383,8 @@ class PromptSDK(BaseModel):
     category: str
     environment: str
     variables: List[Dict[str, Any]] = Field(default_factory=list)
+    eval_status: str = "none"
+    eval_score: Optional[int] = None
     updated_at: datetime
 
     class Config:

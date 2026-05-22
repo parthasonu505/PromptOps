@@ -26,6 +26,8 @@ class Prompt(BaseModel):
     category: str
     environment: str
     variables: List[Dict[str, Any]] = Field(default_factory=list)
+    eval_status: str = "none"    # none | running | passed | failed
+    eval_score: Optional[int] = None   # 0-100
     updated_at: datetime
 
     def render(self, variables: Optional[Dict[str, str]] = None, strict: bool = False) -> str:
