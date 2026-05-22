@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from sqlalchemy.sql import func
 import os
+import re
 from typing import AsyncGenerator
 
 # Database URL from environment
@@ -146,7 +147,7 @@ class PromptComparison(Base):
 
 class Approval(Base):
     __tablename__ = "approvals"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
     version_id = Column(Integer, ForeignKey("prompt_versions.id"), nullable=False)
@@ -156,6 +157,32 @@ class Approval(Base):
     comments = Column(Text)
     requested_at = Column(DateTime(timezone=True), server_default=func.now())
     reviewed_at = Column(DateTime(timezone=True))
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    key_prefix = Column(String(8), nullable=False, index=True)
+    key_hash = Column(String, nullable=False, unique=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    scopes = Column(JSON, default=list)
+    is_active = Column(Boolean, default=True)
+    last_used_at = Column(DateTime(timezone=True))
+    expires_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User")
+
+
+def slugify(name: str) -> str:
+    """Convert a prompt name to a URL-safe slug."""
+    slug = name.lower().strip()
+    slug = re.sub(r"[^\w\s-]", "", slug)
+    slug = re.sub(r"[\s_]+", "-", slug)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug
 
 
 # Database session dependency

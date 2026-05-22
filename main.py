@@ -20,9 +20,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="PromptOps Platform",
-    description="Enterprise-grade prompt lifecycle management platform",
+    description=(
+        "Enterprise-grade prompt lifecycle management platform.\n\n"
+        "## SDK endpoints\n"
+        "Runtime prompt access via `X-API-Key` header — framework and cloud agnostic.\n"
+        "- `GET /api/sdk/v1/prompts` — list approved prompts\n"
+        "- `GET /api/sdk/v1/prompts/{slug}` — fetch a prompt (latest or pinned version)\n"
+        "- `GET /api/sdk/v1/prompts/{slug}/versions` — list all versions\n"
+        "- `POST /api/sdk/v1/prompts/{slug}/render` — server-side variable substitution\n\n"
+        "## API key management\n"
+        "- `GET /api/api-keys` — list your keys\n"
+        "- `POST /api/api-keys` — create a key (shown once)\n"
+        "- `DELETE /api/api-keys/{id}` — revoke a key\n"
+    ),
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Configure CORS

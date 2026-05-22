@@ -258,3 +258,62 @@ class Approval(ApprovalBase):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+# API Key schemas
+class ApiKeyCreate(BaseModel):
+    name: str
+    scopes: List[str] = Field(default_factory=list)
+    expires_in_days: Optional[int] = None
+
+
+class ApiKeyResponse(BaseModel):
+    id: int
+    name: str
+    key_prefix: str
+    scopes: List[str]
+    is_active: bool
+    last_used_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ApiKeyCreated(ApiKeyResponse):
+    """Returned only once at creation — includes the full plaintext key."""
+    key: str
+
+
+# SDK runtime schemas
+class PromptSDK(BaseModel):
+    """Minimal prompt payload for SDK consumers."""
+    id: int
+    name: str
+    slug: str
+    description: Optional[str] = None
+    content: str
+    version: Optional[str] = None
+    version_id: Optional[int] = None
+    category: str
+    environment: str
+    variables: List[Dict[str, Any]] = Field(default_factory=list)
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PromptRenderRequest(BaseModel):
+    variables: Dict[str, str] = Field(default_factory=dict)
+    version: Optional[str] = None
+    environment: Optional[str] = None
+
+
+class PromptRenderResponse(BaseModel):
+    slug: str
+    version: Optional[str] = None
+    rendered: str
+    variables_used: List[str] = Field(default_factory=list)
+    variables_missing: List[str] = Field(default_factory=list)
