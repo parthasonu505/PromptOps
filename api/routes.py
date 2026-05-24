@@ -1,9 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List, Optional
-from datetime import timedelta
+from datetime import datetime, timedelta
+import re
 
-from database import get_db, User, Prompt, PromptVersion, LlmProvider, UserLlmConfig, Favorite, PromptComparison, Approval
+from database import (
+    get_db, User, Prompt, PromptVersion, LlmProvider, UserLlmConfig,
+    Favorite, PromptComparison, Approval, ApiKey, PromptEval, EvalRun, slugify,
+)
 from schemas import (
     UserLogin, UserLoginResponse, User as UserSchema, UserCreate, UserUpdate,
     Prompt as PromptSchema, PromptCreate, PromptUpdate,
@@ -12,12 +17,19 @@ from schemas import (
     UserLlmConfig as UserLlmConfigSchema, UserLlmConfigCreate, UserLlmConfigUpdate,
     Favorite as FavoriteSchema, FavoriteCreate,
     PromptComparison as PromptComparisonSchema, PromptComparisonCreate, PromptComparisonUpdate,
-    Approval as ApprovalSchema, ApprovalCreate, ApprovalUpdate
+    Approval as ApprovalSchema, ApprovalCreate, ApprovalUpdate,
+    ApiKeyCreate, ApiKeyResponse, ApiKeyCreated,
+    PromptSDK, PromptRenderRequest, PromptRenderResponse,
+    PromptEvalCreate, PromptEvalUpdate, PromptEvalResponse,
+    EvalRunTrigger, EvalRunResponse,
 )
 from auth import (
     authenticate_user, create_access_token, get_current_user, require_roles,
+    get_current_user_from_api_key, generate_api_key, hash_api_key,
     ADMIN_ROLES, ENGINEER_ROLES, LEAD_ROLES, get_password_hash
 )
+from eval_service import execute_eval_run
+from llm_service import llm_service
 from llm_service import llm_service
 
 router = APIRouter()
@@ -465,13 +477,474 @@ async def get_approvals(
 async def create_approval(
     approval_data: ApprovalCreate,
     current_user: User = Depends(require_roles(ENGINEER_ROLES)),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Create a new approval request."""
+    """
+    Submit a version for approval.
+
+    If the prompt has active eval suites, the version must have a passing
+    eval run (eval_status == 'passed') before approval can be requested.
+    Admins may bypass this gate.
+    """
+    version = db.query(PromptVersion).filter(PromptVersion.id == approval_data.version_id).first()
+    if not version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+
+    # Eval gate — only block non-admins when active eval suites exist
+    if current_user.role not in ADMIN_ROLES:
+        active_evals = (
+            db.query(PromptEval)
+            .filter(PromptEval.prompt_id == approval_data.prompt_id, PromptEval.is_active == True)
+            .count()
+        )
+        if active_evals > 0 and version.eval_status != "passed":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Version '{version.version}' must pass all eval suites before it can be "
+                    f"submitted for approval. Current eval status: '{version.eval_status}'. "
+                    "Run evals via POST /api/evals/{eval_id}/run first."
+                ),
+            )
+
     approval = Approval(**approval_data.dict())
-    
     db.add(approval)
     db.commit()
     db.refresh(approval)
-    
     return ApprovalSchema.from_orm(approval)
+
+
+# ---------------------------------------------------------------------------
+# Eval suite CRUD
+# ---------------------------------------------------------------------------
+
+@router.get("/evals", response_model=List[PromptEvalResponse])
+async def list_evals(
+    prompt_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List eval suites, optionally filtered by prompt."""
+    query = db.query(PromptEval)
+    if prompt_id:
+        query = query.filter(PromptEval.prompt_id == prompt_id)
+    return [PromptEvalResponse.from_orm(e) for e in query.all()]
+
+
+@router.post("/evals", response_model=PromptEvalResponse, status_code=status.HTTP_201_CREATED)
+async def create_eval(
+    body: PromptEvalCreate,
+    current_user: User = Depends(require_roles(ENGINEER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Create an eval suite for a prompt."""
+    prompt = db.query(Prompt).filter(Prompt.id == body.prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt not found")
+
+    # Validate eval_types
+    from schemas import EVAL_TYPES
+    for tc in body.test_cases:
+        if tc.eval_type not in EVAL_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unknown eval_type '{tc.eval_type}'. Valid: {sorted(EVAL_TYPES)}",
+            )
+
+    suite = PromptEval(
+        prompt_id=body.prompt_id,
+        name=body.name,
+        description=body.description,
+        test_cases=[tc.model_dump() for tc in body.test_cases],
+        pass_threshold=body.pass_threshold,
+        judge_provider=body.judge_provider,
+        judge_model=body.judge_model,
+        created_by=current_user.id,
+    )
+    db.add(suite)
+    db.commit()
+    db.refresh(suite)
+    return PromptEvalResponse.from_orm(suite)
+
+
+@router.get("/evals/{eval_id}", response_model=PromptEvalResponse)
+async def get_eval(
+    eval_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    suite = db.query(PromptEval).filter(PromptEval.id == eval_id).first()
+    if not suite:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Eval suite not found")
+    return PromptEvalResponse.from_orm(suite)
+
+
+@router.put("/evals/{eval_id}", response_model=PromptEvalResponse)
+async def update_eval(
+    eval_id: int,
+    body: PromptEvalUpdate,
+    current_user: User = Depends(require_roles(ENGINEER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    suite = db.query(PromptEval).filter(PromptEval.id == eval_id).first()
+    if not suite:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Eval suite not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        if field == "test_cases" and value is not None:
+            value = [tc if isinstance(tc, dict) else tc.model_dump() for tc in value]
+        setattr(suite, field, value)
+    db.commit()
+    db.refresh(suite)
+    return PromptEvalResponse.from_orm(suite)
+
+
+# ---------------------------------------------------------------------------
+# Triggering eval runs
+# ---------------------------------------------------------------------------
+
+@router.post("/evals/{eval_id}/run", response_model=EvalRunResponse, status_code=status.HTTP_202_ACCEPTED)
+async def trigger_eval_run(
+    eval_id: int,
+    body: EvalRunTrigger,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_roles(ENGINEER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """
+    Trigger an eval run for a specific version.
+
+    The run executes asynchronously. Poll ``GET /api/eval-runs/{run_id}``
+    for the result, or watch the version's ``eval_status`` field.
+
+    If the suite contains LLM-based checks (output_contains, output_regex,
+    llm_judge), supply ``llm_config_id`` pointing to one of your configured
+    LLM providers (from GET /api/user-llm-configs).
+    """
+    suite = db.query(PromptEval).filter(PromptEval.id == eval_id, PromptEval.is_active == True).first()
+    if not suite:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Eval suite not found or inactive")
+
+    version = db.query(PromptVersion).filter(PromptVersion.id == body.version_id).first()
+    if not version:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+
+    if version.prompt_id != suite.prompt_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Version does not belong to the prompt this eval suite is attached to",
+        )
+
+    # Resolve encrypted API key if an LLM config was supplied
+    encrypted_api_key: Optional[str] = None
+    if body.llm_config_id:
+        config = db.query(UserLlmConfig).filter(
+            UserLlmConfig.id == body.llm_config_id,
+            UserLlmConfig.user_id == current_user.id,
+            UserLlmConfig.is_active == True,
+        ).first()
+        if not config:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="LLM config not found")
+        encrypted_api_key = str(config.api_key)
+
+    # Mark the version as eval-running immediately
+    version.eval_status = "running"
+    db.commit()
+
+    # Create the run record in "running" state
+    run = EvalRun(
+        eval_id=eval_id,
+        version_id=body.version_id,
+        status="running",
+        triggered_by=current_user.id,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    # Execute in background so the HTTP response returns immediately
+    background_tasks.add_task(
+        execute_eval_run, run, suite, version, db, encrypted_api_key
+    )
+
+    return EvalRunResponse.from_orm(run)
+
+
+@router.get("/eval-runs/{run_id}", response_model=EvalRunResponse)
+async def get_eval_run(
+    run_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Poll the status and results of an eval run."""
+    run = db.query(EvalRun).filter(EvalRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Eval run not found")
+    db.refresh(run)
+    return EvalRunResponse.from_orm(run)
+
+
+@router.get("/eval-runs", response_model=List[EvalRunResponse])
+async def list_eval_runs(
+    eval_id: Optional[int] = None,
+    version_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List eval runs, optionally filtered by suite or version."""
+    query = db.query(EvalRun)
+    if eval_id:
+        query = query.filter(EvalRun.eval_id == eval_id)
+    if version_id:
+        query = query.filter(EvalRun.version_id == version_id)
+    return [EvalRunResponse.from_orm(r) for r in query.order_by(EvalRun.started_at.desc()).all()]
+
+
+# ---------------------------------------------------------------------------
+# API Key management (JWT-authenticated)
+# ---------------------------------------------------------------------------
+
+@router.get("/api-keys", response_model=List[ApiKeyResponse])
+async def list_api_keys(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List the calling user's API keys."""
+    keys = db.query(ApiKey).filter(ApiKey.user_id == current_user.id).all()
+    return [ApiKeyResponse.from_orm(k) for k in keys]
+
+
+@router.post("/api-keys", response_model=ApiKeyCreated, status_code=status.HTTP_201_CREATED)
+async def create_api_key(
+    body: ApiKeyCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new API key. The plaintext key is shown **once** — store it securely."""
+    full_key, prefix, key_hash = generate_api_key()
+    expires_at = None
+    if body.expires_in_days:
+        expires_at = datetime.utcnow() + timedelta(days=body.expires_in_days)
+
+    record = ApiKey(
+        name=body.name,
+        key_prefix=prefix,
+        key_hash=key_hash,
+        user_id=current_user.id,
+        scopes=body.scopes,
+        expires_at=expires_at,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    return ApiKeyCreated(
+        id=record.id,
+        name=record.name,
+        key_prefix=record.key_prefix,
+        scopes=record.scopes,
+        is_active=record.is_active,
+        last_used_at=record.last_used_at,
+        expires_at=record.expires_at,
+        created_at=record.created_at,
+        key=full_key,
+    )
+
+
+@router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_api_key(
+    key_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revoke (deactivate) an API key."""
+    record = db.query(ApiKey).filter(
+        ApiKey.id == key_id, ApiKey.user_id == current_user.id
+    ).first()
+    if not record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+    record.is_active = False
+    db.commit()
+
+
+# ---------------------------------------------------------------------------
+# SDK endpoints — authenticated via X-API-Key header
+# ---------------------------------------------------------------------------
+
+def _resolve_prompt(db: Session, slug: str) -> Prompt:
+    """Find a prompt by exact name or slug match."""
+    prompt = db.query(Prompt).filter(
+        func.lower(Prompt.name) == slug.lower()
+    ).first()
+    if not prompt:
+        target = slugify(slug)
+        for p in db.query(Prompt).all():
+            if slugify(p.name) == target:
+                return p
+    if not prompt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Prompt '{slug}' not found")
+    return prompt
+
+
+def _latest_approved_version(db: Session, prompt_id: int) -> Optional[PromptVersion]:
+    return (
+        db.query(PromptVersion)
+        .filter(PromptVersion.prompt_id == prompt_id, PromptVersion.status == "approved")
+        .order_by(PromptVersion.created_at.desc())
+        .first()
+    )
+
+
+def _prompt_to_sdk(prompt: Prompt, version: Optional[PromptVersion]) -> PromptSDK:
+    return PromptSDK(
+        id=prompt.id,
+        name=prompt.name,
+        slug=slugify(prompt.name),
+        description=prompt.description,
+        content=version.content if version else prompt.content,
+        version=version.version if version else None,
+        version_id=version.id if version else None,
+        category=prompt.category,
+        environment=prompt.environment,
+        variables=prompt.variables or [],
+        eval_status=version.eval_status if version else "none",
+        eval_score=version.eval_score if version else None,
+        updated_at=prompt.updated_at,
+    )
+
+
+def _render_template(content: str, variables: dict) -> tuple[str, list, list]:
+    """Substitute {{variable}} placeholders; return (rendered, used, missing)."""
+    declared = set(re.findall(r"\{\{(\w+)\}\}", content))
+    used, missing = [], []
+    rendered = content
+    for key in declared:
+        if key in variables:
+            rendered = rendered.replace("{{" + key + "}}", variables[key])
+            used.append(key)
+        else:
+            missing.append(key)
+    return rendered, used, missing
+
+
+@router.get("/sdk/v1/prompts", response_model=List[PromptSDK])
+async def sdk_list_prompts(
+    environment: Optional[str] = None,
+    category: Optional[str] = None,
+    current_user: User = Depends(get_current_user_from_api_key),
+    db: Session = Depends(get_db),
+):
+    """List all approved prompts visible to the API key owner."""
+    query = db.query(Prompt).filter(Prompt.status == "approved")
+    if environment:
+        query = query.filter(Prompt.environment == environment)
+    if category:
+        query = query.filter(Prompt.category == category)
+
+    result = []
+    for p in query.all():
+        v = _latest_approved_version(db, p.id)
+        result.append(_prompt_to_sdk(p, v))
+    return result
+
+
+@router.get("/sdk/v1/prompts/{slug}", response_model=PromptSDK)
+async def sdk_get_prompt(
+    slug: str,
+    version: Optional[str] = None,
+    environment: Optional[str] = None,
+    current_user: User = Depends(get_current_user_from_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch a prompt by name or slug.
+
+    - Omit `version` to get the latest approved version.
+    - Pass `version=x.y.z` for a specific version.
+    - Pass `environment` to filter by deployment environment.
+    """
+    prompt = _resolve_prompt(db, slug)
+    if environment and prompt.environment != environment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Prompt '{slug}' not found in environment '{environment}'",
+        )
+
+    if version:
+        ver = (
+            db.query(PromptVersion)
+            .filter(PromptVersion.prompt_id == prompt.id, PromptVersion.version == version)
+            .first()
+        )
+        if not ver:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Version '{version}' of prompt '{slug}' not found",
+            )
+    else:
+        ver = _latest_approved_version(db, prompt.id)
+
+    return _prompt_to_sdk(prompt, ver)
+
+
+@router.get("/sdk/v1/prompts/{slug}/versions", response_model=List[PromptVersionSchema])
+async def sdk_list_versions(
+    slug: str,
+    current_user: User = Depends(get_current_user_from_api_key),
+    db: Session = Depends(get_db),
+):
+    """List all versions of a prompt."""
+    prompt = _resolve_prompt(db, slug)
+    versions = (
+        db.query(PromptVersion)
+        .filter(PromptVersion.prompt_id == prompt.id)
+        .order_by(PromptVersion.created_at.desc())
+        .all()
+    )
+    return [PromptVersionSchema.from_orm(v) for v in versions]
+
+
+@router.post("/sdk/v1/prompts/{slug}/render", response_model=PromptRenderResponse)
+async def sdk_render_prompt(
+    slug: str,
+    body: PromptRenderRequest,
+    current_user: User = Depends(get_current_user_from_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Fetch a prompt and render it with the provided variables.
+
+    Returns the fully-substituted prompt text along with lists of which
+    variables were filled and which are still missing.
+    """
+    prompt = _resolve_prompt(db, slug)
+
+    if body.environment and prompt.environment != body.environment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Prompt '{slug}' not found in environment '{body.environment}'",
+        )
+
+    if body.version:
+        ver = (
+            db.query(PromptVersion)
+            .filter(PromptVersion.prompt_id == prompt.id, PromptVersion.version == body.version)
+            .first()
+        )
+        if not ver:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Version '{body.version}' not found",
+            )
+    else:
+        ver = _latest_approved_version(db, prompt.id)
+
+    content = ver.content if ver else prompt.content
+    rendered, used, missing = _render_template(content, body.variables)
+
+    return PromptRenderResponse(
+        slug=slugify(prompt.name),
+        version=ver.version if ver else None,
+        rendered=rendered,
+        variables_used=used,
+        variables_missing=missing,
+    )
