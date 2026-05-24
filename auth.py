@@ -2,10 +2,11 @@ from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, HTTPException, Security, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
 from sqlalchemy.orm import Session
-from database import get_db, User
+from database import get_db, User, ApiKey
+import hashlib
 import os
 
 # Configuration
@@ -127,3 +128,58 @@ ADMIN_ROLES = ["admin"]
 ENGINEER_ROLES = ["prompt_engineer", "engineering_lead", "admin"]
 LEAD_ROLES = ["engineering_lead", "admin"]
 API_ROLES = ["api_developer", "admin"]
+
+# API key header extractor
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def hash_api_key(key: str) -> str:
+    """SHA-256 hash of an API key for storage."""
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def generate_api_key() -> tuple[str, str, str]:
+    """Return (full_key, prefix, hash)."""
+    import secrets
+    raw = secrets.token_urlsafe(32)
+    full_key = f"po_{raw}"
+    prefix = full_key[:8]
+    return full_key, prefix, hash_api_key(full_key)
+
+
+async def get_current_user_from_api_key(
+    api_key_value: Optional[str] = Security(api_key_header),
+    db: Session = Depends(get_db),
+) -> User:
+    """Authenticate via X-API-Key header and return the owning user."""
+    if not api_key_value:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key required",
+        )
+    key_hash = hash_api_key(api_key_value)
+    record = (
+        db.query(ApiKey)
+        .filter(ApiKey.key_hash == key_hash, ApiKey.is_active == True)
+        .first()
+    )
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or inactive API key",
+        )
+    if record.expires_at and record.expires_at < datetime.utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key has expired",
+        )
+    # Update last_used_at without triggering heavy ORM overhead
+    record.last_used_at = datetime.utcnow()
+    db.commit()
+    user = get_user_by_id(db, record.user_id)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key owner account is inactive",
+        )
+    return user
