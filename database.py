@@ -53,6 +53,9 @@ class Prompt(Base):
     usage_count = Column(Integer, default=0)
     rating = Column(Integer)
     variables = Column(JSON, default=list)
+    tags = Column(JSON, default=list)            # for routing and discovery
+    fragment_slugs = Column(JSON, default=list)  # ordered list of PromptFragment slugs to compose
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -218,6 +221,120 @@ class ApiKey(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User")
+
+
+class PromptFragment(Base):
+    """Reusable prompt component injected into prompts via {{fragment:slug}}."""
+    __tablename__ = "prompt_fragments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String, unique=True, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text)
+    content = Column(Text, nullable=False)
+    category = Column(String)   # constraints | tone | output-format | persona | safety
+    owner_team = Column(String)
+    version = Column(String, default="1.0.0")
+    is_active = Column(Boolean, default=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class PromptExperiment(Base):
+    """A/B test: split traffic between two versions of a prompt."""
+    __tablename__ = "prompt_experiments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text)
+    control_version_id = Column(Integer, ForeignKey("prompt_versions.id"), nullable=False)
+    variant_version_id = Column(Integer, ForeignKey("prompt_versions.id"), nullable=False)
+    traffic_split = Column(Integer, default=20)  # % routed to variant
+    status = Column(String, default="running")   # running | paused | completed
+    winner_version_id = Column(Integer, ForeignKey("prompt_versions.id"))
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    started_at = Column(DateTime(timezone=True), server_default=func.now())
+    ended_at = Column(DateTime(timezone=True))
+
+
+class ProductionLog(Base):
+    """Actual LLM outputs logged from production via the SDK — foundation for drift detection."""
+    __tablename__ = "production_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    version_id = Column(Integer, ForeignKey("prompt_versions.id"))
+    version_str = Column(String)
+    environment = Column(String)
+    input_variables = Column(JSON)
+    rendered_prompt = Column(Text)
+    llm_output = Column(Text)
+    model_id = Column(String)
+    latency_ms = Column(Integer)
+    token_count = Column(Integer)
+    cost_cents = Column(Integer)
+    feedback = Column(String)    # positive | negative | null
+    session_id = Column(String, index=True)
+    experiment_id = Column(Integer, ForeignKey("prompt_experiments.id"))
+    logged_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class AgentTask(Base):
+    """Work item created by an autonomous agent, awaiting human review."""
+    __tablename__ = "agent_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_type = Column(String, nullable=False)
+    # propose_fix | generate_evals | optimize_variant | certify_model
+    prompt_id = Column(Integer, ForeignKey("prompts.id"))
+    version_id = Column(Integer, ForeignKey("prompt_versions.id"))
+    status = Column(String, default="pending")
+    # pending | in_progress | awaiting_review | approved | rejected | completed
+    input_data = Column(JSON)
+    output_data = Column(JSON)
+    reasoning = Column(Text)
+    confidence = Column(Integer)    # 0-100
+    triggered_by = Column(String)   # drift_alert | model_update | scheduled | manual
+    trigger_ref_id = Column(Integer)
+    reviewed_by = Column(Integer, ForeignKey("users.id"))
+    review_notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class DriftAlert(Base):
+    """Quality anomaly detected in production behaviour for a prompt version."""
+    __tablename__ = "drift_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    version_id = Column(Integer, ForeignKey("prompt_versions.id"))
+    alert_type = Column(String, nullable=False)
+    # constraint_violation | output_length_drift | negative_feedback_spike | model_update
+    severity = Column(String, nullable=False)   # low | medium | high | critical
+    description = Column(Text)
+    evidence = Column(JSON)
+    status = Column(String, default="open")     # open | acknowledged | resolved | auto_remediated
+    remediation_task_id = Column(Integer)       # FK to agent_tasks (no constraint to avoid circular)
+    detected_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    resolved_at = Column(DateTime(timezone=True))
+
+
+class ModelCertification(Base):
+    """Eval results for a specific prompt version against a specific LLM model."""
+    __tablename__ = "model_certifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    eval_run_id = Column(Integer, ForeignKey("eval_runs.id"))
+    prompt_id = Column(Integer, ForeignKey("prompts.id"), nullable=False)
+    version_id = Column(Integer, ForeignKey("prompt_versions.id"), nullable=False)
+    model_provider = Column(String, nullable=False)
+    model_id = Column(String, nullable=False)
+    score = Column(Integer)     # 0-100
+    status = Column(String)     # passed | failed
+    certified_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 def slugify(name: str) -> str:

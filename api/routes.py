@@ -7,7 +7,9 @@ import re
 
 from database import (
     get_db, User, Prompt, PromptVersion, LlmProvider, UserLlmConfig,
-    Favorite, PromptComparison, Approval, ApiKey, PromptEval, EvalRun, slugify,
+    Favorite, PromptComparison, Approval, ApiKey, PromptEval, EvalRun,
+    PromptFragment, PromptExperiment, ProductionLog, AgentTask, DriftAlert,
+    ModelCertification, slugify,
 )
 from schemas import (
     UserLogin, UserLoginResponse, User as UserSchema, UserCreate, UserUpdate,
@@ -22,6 +24,12 @@ from schemas import (
     PromptSDK, PromptRenderRequest, PromptRenderResponse,
     PromptEvalCreate, PromptEvalUpdate, PromptEvalResponse,
     EvalRunTrigger, EvalRunResponse,
+    PromptFragmentCreate, PromptFragmentUpdate, PromptFragmentResponse,
+    ExperimentCreate, ExperimentUpdate, ExperimentResponse,
+    ProductionLogCreate, ProductionLogResponse, ProductionStats,
+    DriftAlertResponse, DriftAlertUpdate,
+    AgentTaskResponse, AgentTaskReview, AgentTriggerRequest, OptimizeRequest,
+    CertificationRequest, CertificationResponse,
 )
 from auth import (
     authenticate_user, create_access_token, get_current_user, require_roles,
@@ -29,6 +37,10 @@ from auth import (
     ADMIN_ROLES, ENGINEER_ROLES, LEAD_ROLES, get_password_hash
 )
 from eval_service import execute_eval_run
+from fragment_service import compose, validate_fragment_slugs
+from drift_service import analyze_prompt, run_full_scan
+from intelligence_agent import run_agent_task
+from certification_service import certify_version, get_matrix
 from llm_service import llm_service
 from llm_service import llm_service
 
@@ -794,18 +806,26 @@ def _latest_approved_version(db: Session, prompt_id: int) -> Optional[PromptVers
     )
 
 
-def _prompt_to_sdk(prompt: Prompt, version: Optional[PromptVersion]) -> PromptSDK:
+def _prompt_to_sdk(prompt: Prompt, version: Optional[PromptVersion], db: Optional[Session] = None) -> PromptSDK:
+    raw_content = version.content if version else prompt.content
+    # Compose fragments if any are declared and we have a db session
+    if db and (prompt.fragment_slugs or "{{fragment:" in raw_content):
+        composed, _, _ = compose(raw_content, db)
+    else:
+        composed = raw_content
     return PromptSDK(
         id=prompt.id,
         name=prompt.name,
         slug=slugify(prompt.name),
         description=prompt.description,
-        content=version.content if version else prompt.content,
+        content=composed,
         version=version.version if version else None,
         version_id=version.id if version else None,
         category=prompt.category,
         environment=prompt.environment,
         variables=prompt.variables or [],
+        tags=prompt.tags or [],
+        fragment_slugs=prompt.fragment_slugs or [],
         eval_status=version.eval_status if version else "none",
         eval_score=version.eval_score if version else None,
         updated_at=prompt.updated_at,
@@ -843,7 +863,7 @@ async def sdk_list_prompts(
     result = []
     for p in query.all():
         v = _latest_approved_version(db, p.id)
-        result.append(_prompt_to_sdk(p, v))
+        result.append(_prompt_to_sdk(p, v, db))
     return result
 
 
@@ -883,7 +903,7 @@ async def sdk_get_prompt(
     else:
         ver = _latest_approved_version(db, prompt.id)
 
-    return _prompt_to_sdk(prompt, ver)
+    return _prompt_to_sdk(prompt, ver, db)
 
 
 @router.get("/sdk/v1/prompts/{slug}/versions", response_model=List[PromptVersionSchema])
@@ -939,7 +959,9 @@ async def sdk_render_prompt(
         ver = _latest_approved_version(db, prompt.id)
 
     content = ver.content if ver else prompt.content
-    rendered, used, missing = _render_template(content, body.variables)
+    # Apply fragment composition before variable substitution
+    composed, _, _ = compose(content, db)
+    rendered, used, missing = _render_template(composed, body.variables)
 
     return PromptRenderResponse(
         slug=slugify(prompt.name),
@@ -948,3 +970,588 @@ async def sdk_render_prompt(
         variables_used=used,
         variables_missing=missing,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PROMPT FRAGMENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/fragments", response_model=List[PromptFragmentResponse])
+async def list_fragments(
+    category: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List reusable prompt fragments."""
+    q = db.query(PromptFragment).filter(PromptFragment.is_active == True)
+    if category:
+        q = q.filter(PromptFragment.category == category)
+    return [PromptFragmentResponse.from_orm(f) for f in q.all()]
+
+
+@router.post("/fragments", response_model=PromptFragmentResponse, status_code=status.HTTP_201_CREATED)
+async def create_fragment(
+    body: PromptFragmentCreate,
+    current_user: User = Depends(require_roles(ENGINEER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Create a new reusable prompt fragment."""
+    if db.query(PromptFragment).filter(PromptFragment.slug == body.slug).first():
+        raise HTTPException(status_code=400, detail=f"Fragment slug '{body.slug}' already exists")
+    frag = PromptFragment(**body.model_dump(), created_by=current_user.id)
+    db.add(frag)
+    db.commit()
+    db.refresh(frag)
+    return PromptFragmentResponse.from_orm(frag)
+
+
+@router.get("/fragments/{fragment_id}", response_model=PromptFragmentResponse)
+async def get_fragment(
+    fragment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    frag = db.query(PromptFragment).filter(PromptFragment.id == fragment_id).first()
+    if not frag:
+        raise HTTPException(status_code=404, detail="Fragment not found")
+    return PromptFragmentResponse.from_orm(frag)
+
+
+@router.put("/fragments/{fragment_id}", response_model=PromptFragmentResponse)
+async def update_fragment(
+    fragment_id: int,
+    body: PromptFragmentUpdate,
+    current_user: User = Depends(require_roles(LEAD_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Update a fragment. Changes propagate to all prompts that include it at next serve."""
+    frag = db.query(PromptFragment).filter(PromptFragment.id == fragment_id).first()
+    if not frag:
+        raise HTTPException(status_code=404, detail="Fragment not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(frag, field, value)
+    db.commit()
+    db.refresh(frag)
+    return PromptFragmentResponse.from_orm(frag)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# A/B EXPERIMENTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/experiments", response_model=ExperimentResponse, status_code=status.HTTP_201_CREATED)
+async def create_experiment(
+    body: ExperimentCreate,
+    current_user: User = Depends(require_roles(LEAD_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Create an A/B experiment to split traffic between two prompt versions."""
+    exp = PromptExperiment(**body.model_dump(), created_by=current_user.id)
+    db.add(exp)
+    db.commit()
+    db.refresh(exp)
+    return ExperimentResponse.from_orm(exp)
+
+
+@router.get("/experiments", response_model=List[ExperimentResponse])
+async def list_experiments(
+    prompt_id: Optional[int] = None,
+    status_filter: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(PromptExperiment)
+    if prompt_id:
+        q = q.filter(PromptExperiment.prompt_id == prompt_id)
+    if status_filter:
+        q = q.filter(PromptExperiment.status == status_filter)
+    return [ExperimentResponse.from_orm(e) for e in q.all()]
+
+
+@router.put("/experiments/{exp_id}", response_model=ExperimentResponse)
+async def update_experiment(
+    exp_id: int,
+    body: ExperimentUpdate,
+    current_user: User = Depends(require_roles(LEAD_ROLES)),
+    db: Session = Depends(get_db),
+):
+    exp = db.query(PromptExperiment).filter(PromptExperiment.id == exp_id).first()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(exp, field, value)
+    if body.status == "completed":
+        exp.ended_at = datetime.utcnow()
+    db.commit()
+    db.refresh(exp)
+    return ExperimentResponse.from_orm(exp)
+
+
+@router.get("/sdk/v1/experiment/{slug}", response_model=PromptSDK)
+async def sdk_get_experiment_version(
+    slug: str,
+    session_id: str = "",
+    environment: Optional[str] = None,
+    current_user: User = Depends(get_current_user_from_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the appropriate prompt version for an A/B experiment.
+
+    The assignment is deterministic — the same session_id always receives
+    the same variant, ensuring a consistent experience within a session.
+    """
+    import hashlib
+    prompt = _resolve_prompt(db, slug)
+    exp = (
+        db.query(PromptExperiment)
+        .filter(
+            PromptExperiment.prompt_id == prompt.id,
+            PromptExperiment.status == "running",
+        )
+        .first()
+    )
+    if not exp:
+        # No active experiment — serve the standard latest approved version
+        ver = _latest_approved_version(db, prompt.id)
+        return _prompt_to_sdk(prompt, ver, db)
+
+    # Deterministic split: hash(session_id) % 100 < traffic_split → variant
+    hash_val = int(hashlib.sha256(session_id.encode()).hexdigest(), 16) % 100
+    version_id = exp.variant_version_id if hash_val < exp.traffic_split else exp.control_version_id
+    ver = db.query(PromptVersion).filter(PromptVersion.id == version_id).first()
+    return _prompt_to_sdk(prompt, ver, db)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PRODUCTION LOGGING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/sdk/v1/log", status_code=status.HTTP_202_ACCEPTED)
+async def sdk_log_output(
+    body: ProductionLogCreate,
+    current_user: User = Depends(get_current_user_from_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Ingest a production output log from the SDK.
+    Called automatically by `client.log_output()` — fire-and-forget.
+    """
+    log = ProductionLog(**body.model_dump())
+    db.add(log)
+    db.commit()
+    return {"status": "accepted"}
+
+
+@router.get("/production-logs", response_model=List[ProductionLogResponse])
+async def list_production_logs(
+    prompt_id: Optional[int] = None,
+    version_id: Optional[int] = None,
+    feedback: Optional[str] = None,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Query production logs for a prompt or version."""
+    q = db.query(ProductionLog)
+    if prompt_id:
+        q = q.filter(ProductionLog.prompt_id == prompt_id)
+    if version_id:
+        q = q.filter(ProductionLog.version_id == version_id)
+    if feedback:
+        q = q.filter(ProductionLog.feedback == feedback)
+    logs = q.order_by(ProductionLog.logged_at.desc()).limit(limit).all()
+    return [ProductionLogResponse.from_orm(l) for l in logs]
+
+
+@router.get("/production-logs/stats", response_model=ProductionStats)
+async def production_stats(
+    prompt_id: int,
+    period_hours: int = 24,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Aggregate production metrics for a prompt over a time window."""
+    from datetime import timedelta
+    since = datetime.utcnow() - timedelta(hours=period_hours)
+    logs = (
+        db.query(ProductionLog)
+        .filter(ProductionLog.prompt_id == prompt_id, ProductionLog.logged_at >= since)
+        .all()
+    )
+    pos = sum(1 for l in logs if l.feedback == "positive")
+    neg = sum(1 for l in logs if l.feedback == "negative")
+    latencies = [l.latency_ms for l in logs if l.latency_ms]
+    tokens = [l.token_count for l in logs if l.token_count]
+    return ProductionStats(
+        prompt_id=prompt_id,
+        total_calls=len(logs),
+        positive_feedback=pos,
+        negative_feedback=neg,
+        avg_latency_ms=sum(latencies) / len(latencies) if latencies else None,
+        avg_token_count=sum(tokens) / len(tokens) if tokens else None,
+        period_hours=period_hours,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DRIFT ALERTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/drift-alerts", response_model=List[DriftAlertResponse])
+async def list_drift_alerts(
+    prompt_id: Optional[int] = None,
+    alert_status: Optional[str] = None,
+    severity: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(DriftAlert)
+    if prompt_id:
+        q = q.filter(DriftAlert.prompt_id == prompt_id)
+    if alert_status:
+        q = q.filter(DriftAlert.status == alert_status)
+    if severity:
+        q = q.filter(DriftAlert.severity == severity)
+    return [DriftAlertResponse.from_orm(a) for a in q.order_by(DriftAlert.detected_at.desc()).all()]
+
+
+@router.put("/drift-alerts/{alert_id}", response_model=DriftAlertResponse)
+async def update_drift_alert(
+    alert_id: int,
+    body: DriftAlertUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    alert = db.query(DriftAlert).filter(DriftAlert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    alert.status = body.status
+    if body.status == "resolved":
+        alert.resolved_at = datetime.utcnow()
+    db.commit()
+    db.refresh(alert)
+    return DriftAlertResponse.from_orm(alert)
+
+
+@router.post("/drift-alerts/scan")
+async def trigger_drift_scan(
+    prompt_id: Optional[int] = None,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: User = Depends(require_roles(LEAD_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Manually trigger a drift scan. Runs in background."""
+    if prompt_id:
+        background_tasks.add_task(analyze_prompt, db, prompt_id)
+        return {"status": "scanning", "prompt_id": prompt_id}
+    background_tasks.add_task(run_full_scan, db)
+    return {"status": "full_scan_started"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MODEL CERTIFICATION MATRIX
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/certifications/run", response_model=CertificationResponse, status_code=status.HTTP_202_ACCEPTED)
+async def run_certification(
+    body: CertificationRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_roles(ENGINEER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Certify a prompt version against a specific LLM model."""
+    config = db.query(UserLlmConfig).filter(
+        UserLlmConfig.id == body.llm_config_id,
+        UserLlmConfig.user_id == current_user.id,
+        UserLlmConfig.is_active == True,
+    ).first()
+    if not config:
+        raise HTTPException(status_code=404, detail="LLM config not found")
+
+    version = db.query(PromptVersion).filter(PromptVersion.id == body.version_id).first()
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    encrypted_key = str(config.api_key)
+
+    async def _run():
+        await certify_version(
+            body.version_id, body.model_provider, body.model_id,
+            db, encrypted_key, current_user.id,
+        )
+
+    background_tasks.add_task(_run)
+
+    # Return a placeholder — poll /certifications?version_id=X for results
+    return CertificationResponse(
+        id=0,
+        prompt_id=version.prompt_id,
+        version_id=body.version_id,
+        model_provider=body.model_provider,
+        model_id=body.model_id,
+        status="running",
+        certified_at=datetime.utcnow(),
+    )
+
+
+@router.get("/certifications")
+async def get_certifications(
+    prompt_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the certification matrix for a prompt (all versions × all models)."""
+    return get_matrix(prompt_id, db)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENT TASKS — review and act on autonomous agent proposals
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.get("/agent-tasks", response_model=List[AgentTaskResponse])
+async def list_agent_tasks(
+    task_type: Optional[str] = None,
+    task_status: Optional[str] = None,
+    prompt_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(AgentTask)
+    if task_type:
+        q = q.filter(AgentTask.task_type == task_type)
+    if task_status:
+        q = q.filter(AgentTask.status == task_status)
+    if prompt_id:
+        q = q.filter(AgentTask.prompt_id == prompt_id)
+    return [AgentTaskResponse.from_orm(t) for t in q.order_by(AgentTask.created_at.desc()).all()]
+
+
+@router.get("/agent-tasks/{task_id}", response_model=AgentTaskResponse)
+async def get_agent_task(
+    task_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task = db.query(AgentTask).filter(AgentTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return AgentTaskResponse.from_orm(task)
+
+
+@router.post("/agent-tasks/{task_id}/review", response_model=AgentTaskResponse)
+async def review_agent_task(
+    task_id: int,
+    body: AgentTaskReview,
+    current_user: User = Depends(require_roles(LEAD_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """
+    Approve or reject an agent task.
+
+    **Approving a `propose_fix` task** automatically creates a new PromptVersion
+    with the agent's proposed content and a changelog, ready for the normal
+    approval workflow.
+
+    **Approving a `generate_evals` task** adds the generated test cases to the
+    prompt's existing eval suite (or creates a new one).
+    """
+    task = db.query(AgentTask).filter(AgentTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status != "awaiting_review":
+        raise HTTPException(status_code=400, detail=f"Task is not awaiting review (status: {task.status})")
+
+    task.reviewed_by  = current_user.id
+    task.review_notes = body.notes
+    task.status       = "approved" if body.approved else "rejected"
+    task.updated_at   = datetime.utcnow()
+
+    if body.approved:
+        output = task.output_data or {}
+
+        if task.task_type == "propose_fix" and task.version_id:
+            # Create a new prompt version from the agent's proposed content
+            src = db.query(PromptVersion).filter(PromptVersion.id == task.version_id).first()
+            if src and output.get("proposed_content"):
+                new_ver = PromptVersion(
+                    prompt_id=src.prompt_id,
+                    version=_bump_patch(src.version),
+                    content=output["proposed_content"],
+                    changelog=f"[Agent] {output.get('changelog', 'Automated improvement')}",
+                    author_id=current_user.id,
+                    status="draft",
+                )
+                db.add(new_ver)
+                task.status = "completed"
+
+        elif task.task_type == "generate_evals" and task.prompt_id:
+            # Add generated test cases to the existing eval suite or create one
+            suite = (
+                db.query(PromptEval)
+                .filter(PromptEval.prompt_id == task.prompt_id, PromptEval.is_active == True)
+                .first()
+            )
+            new_cases = output.get("test_cases", [])
+            if suite and new_cases:
+                suite.test_cases = (suite.test_cases or []) + new_cases
+            elif new_cases:
+                suite = PromptEval(
+                    prompt_id=task.prompt_id,
+                    name="Agent-generated eval suite",
+                    test_cases=new_cases,
+                    pass_threshold=80,
+                    created_by=current_user.id,
+                )
+                db.add(suite)
+            task.status = "completed"
+
+        elif task.task_type == "optimize_variant" and task.version_id:
+            src = db.query(PromptVersion).filter(PromptVersion.id == task.version_id).first()
+            if src and output.get("variant_content"):
+                new_ver = PromptVersion(
+                    prompt_id=src.prompt_id,
+                    version=_bump_patch(src.version),
+                    content=output["variant_content"],
+                    changelog=f"[Agent] Token-optimised variant. {output.get('changes_summary', '')}",
+                    author_id=current_user.id,
+                    status="draft",
+                )
+                db.add(new_ver)
+                task.status = "completed"
+
+    db.commit()
+    db.refresh(task)
+    return AgentTaskResponse.from_orm(task)
+
+
+def _bump_patch(version_str: str) -> str:
+    """Increment the patch segment of a semantic version string."""
+    try:
+        parts = version_str.split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        return ".".join(parts)
+    except Exception:
+        return version_str + ".1"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AGENT TRIGGERS — kick off autonomous agent tasks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/agents/generate-evals", response_model=AgentTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def agent_generate_evals(
+    body: AgentTriggerRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_roles(ENGINEER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Ask the Intelligence Agent to auto-generate test cases for a prompt."""
+    _require_llm_config(body.llm_config_id, current_user.id, db)
+    task = AgentTask(
+        task_type="generate_evals",
+        prompt_id=body.prompt_id,
+        version_id=body.version_id,
+        triggered_by="manual",
+        input_data={"llm_config_id": body.llm_config_id},
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    config = db.query(UserLlmConfig).filter(UserLlmConfig.id == body.llm_config_id).first()
+    background_tasks.add_task(run_agent_task, task, db, str(config.api_key))
+    return AgentTaskResponse.from_orm(task)
+
+
+@router.post("/agents/optimize", response_model=AgentTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def agent_optimize(
+    body: OptimizeRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_roles(ENGINEER_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Ask the Optimisation Agent to produce a token-efficient variant."""
+    config = _require_llm_config(body.llm_config_id, current_user.id, db)
+    version = db.query(PromptVersion).filter(PromptVersion.id == body.version_id).first()
+    if not version:
+        raise HTTPException(status_code=404, detail="Version not found")
+    task = AgentTask(
+        task_type="optimize_variant",
+        prompt_id=version.prompt_id,
+        version_id=body.version_id,
+        triggered_by="manual",
+        input_data={"target_token_reduction": body.target_token_reduction, "llm_config_id": body.llm_config_id},
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+    background_tasks.add_task(run_agent_task, task, db, str(config.api_key))
+    return AgentTaskResponse.from_orm(task)
+
+
+@router.post("/agents/analyze-drift/{alert_id}", response_model=AgentTaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def agent_analyze_drift(
+    alert_id: int,
+    body: AgentTriggerRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(require_roles(LEAD_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """Ask the Intelligence Agent to diagnose a drift alert and propose a fix."""
+    alert = db.query(DriftAlert).filter(DriftAlert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Drift alert not found")
+    config = _require_llm_config(body.llm_config_id, current_user.id, db)
+
+    # Pull a sample of recent flagged production logs for context
+    from datetime import timedelta
+    samples = (
+        db.query(ProductionLog)
+        .filter(
+            ProductionLog.prompt_id == alert.prompt_id,
+            ProductionLog.version_id == alert.version_id,
+        )
+        .order_by(ProductionLog.logged_at.desc())
+        .limit(5)
+        .all()
+    )
+
+    task = AgentTask(
+        task_type="propose_fix",
+        prompt_id=alert.prompt_id,
+        version_id=alert.version_id,
+        triggered_by="drift_alert",
+        trigger_ref_id=alert_id,
+        input_data={
+            "alert_id": alert_id,
+            "alert_type": alert.alert_type,
+            "description": alert.description,
+            "evidence": alert.evidence,
+            "production_samples": [l.llm_output for l in samples if l.llm_output],
+            "llm_config_id": body.llm_config_id,
+        },
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    alert.remediation_task_id = task.id
+    alert.status = "acknowledged"
+    db.commit()
+
+    background_tasks.add_task(run_agent_task, task, db, str(config.api_key))
+    return AgentTaskResponse.from_orm(task)
+
+
+def _require_llm_config(config_id: Optional[int], user_id: int, db: Session) -> UserLlmConfig:
+    if not config_id:
+        raise HTTPException(status_code=400, detail="llm_config_id is required for agent tasks")
+    config = db.query(UserLlmConfig).filter(
+        UserLlmConfig.id == config_id,
+        UserLlmConfig.user_id == user_id,
+        UserLlmConfig.is_active == True,
+    ).first()
+    if not config:
+        raise HTTPException(status_code=404, detail="LLM config not found")
+    return config

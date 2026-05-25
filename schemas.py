@@ -56,6 +56,8 @@ class PromptBase(BaseModel):
     environment: str
     access_level: str
     variables: List[Dict[str, Any]] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    fragment_slugs: List[str] = Field(default_factory=list)
 
 
 class PromptCreate(PromptBase):
@@ -71,6 +73,8 @@ class PromptUpdate(BaseModel):
     environment: Optional[str] = None
     access_level: Optional[str] = None
     variables: Optional[List[Dict[str, Any]]] = None
+    tags: Optional[List[str]] = None
+    fragment_slugs: Optional[List[str]] = None
 
 
 class Prompt(PromptBase):
@@ -383,6 +387,8 @@ class PromptSDK(BaseModel):
     category: str
     environment: str
     variables: List[Dict[str, Any]] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    fragment_slugs: List[str] = Field(default_factory=list)
     eval_status: str = "none"
     eval_score: Optional[int] = None
     updated_at: datetime
@@ -403,3 +409,217 @@ class PromptRenderResponse(BaseModel):
     rendered: str
     variables_used: List[str] = Field(default_factory=list)
     variables_missing: List[str] = Field(default_factory=list)
+
+
+# ── Prompt Fragments ────────────────────────────────────────────────────────
+
+class PromptFragmentCreate(BaseModel):
+    slug: str
+    name: str
+    description: Optional[str] = None
+    content: str
+    category: Optional[str] = None
+    owner_team: Optional[str] = None
+    version: str = "1.0.0"
+
+
+class PromptFragmentUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    content: Optional[str] = None
+    category: Optional[str] = None
+    owner_team: Optional[str] = None
+    version: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PromptFragmentResponse(BaseModel):
+    id: int
+    slug: str
+    name: str
+    description: Optional[str] = None
+    content: str
+    category: Optional[str] = None
+    owner_team: Optional[str] = None
+    version: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ── A/B Experiments ─────────────────────────────────────────────────────────
+
+class ExperimentCreate(BaseModel):
+    prompt_id: int
+    name: str
+    description: Optional[str] = None
+    control_version_id: int
+    variant_version_id: int
+    traffic_split: int = Field(20, ge=1, le=99)  # % to variant
+
+
+class ExperimentUpdate(BaseModel):
+    status: Optional[str] = None         # paused | running | completed
+    winner_version_id: Optional[int] = None
+    traffic_split: Optional[int] = None
+
+
+class ExperimentResponse(BaseModel):
+    id: int
+    prompt_id: int
+    name: str
+    description: Optional[str] = None
+    control_version_id: int
+    variant_version_id: int
+    traffic_split: int
+    status: str
+    winner_version_id: Optional[int] = None
+    started_at: datetime
+    ended_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ── Production Logging ───────────────────────────────────────────────────────
+
+class ProductionLogCreate(BaseModel):
+    prompt_id: int
+    version_id: Optional[int] = None
+    version_str: Optional[str] = None
+    environment: Optional[str] = None
+    input_variables: Optional[Dict[str, str]] = None
+    rendered_prompt: Optional[str] = None
+    llm_output: str
+    model_id: Optional[str] = None
+    latency_ms: Optional[int] = None
+    token_count: Optional[int] = None
+    cost_cents: Optional[int] = None
+    feedback: Optional[str] = None     # positive | negative
+    session_id: Optional[str] = None
+    experiment_id: Optional[int] = None
+
+
+class ProductionLogResponse(BaseModel):
+    id: int
+    prompt_id: int
+    version_id: Optional[int] = None
+    version_str: Optional[str] = None
+    environment: Optional[str] = None
+    llm_output: str
+    model_id: Optional[str] = None
+    latency_ms: Optional[int] = None
+    token_count: Optional[int] = None
+    feedback: Optional[str] = None
+    session_id: Optional[str] = None
+    logged_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ProductionStats(BaseModel):
+    prompt_id: int
+    version_str: Optional[str] = None
+    total_calls: int
+    positive_feedback: int
+    negative_feedback: int
+    avg_latency_ms: Optional[float] = None
+    avg_token_count: Optional[float] = None
+    period_hours: int
+
+
+# ── Drift Alerts ─────────────────────────────────────────────────────────────
+
+class DriftAlertResponse(BaseModel):
+    id: int
+    prompt_id: int
+    version_id: Optional[int] = None
+    alert_type: str
+    severity: str
+    description: Optional[str] = None
+    evidence: Optional[Dict[str, Any]] = None
+    status: str
+    remediation_task_id: Optional[int] = None
+    detected_at: datetime
+    resolved_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class DriftAlertUpdate(BaseModel):
+    status: str    # acknowledged | resolved
+
+
+# ── Agent Tasks ──────────────────────────────────────────────────────────────
+
+class AgentTaskResponse(BaseModel):
+    id: int
+    task_type: str
+    prompt_id: Optional[int] = None
+    version_id: Optional[int] = None
+    status: str
+    input_data: Optional[Dict[str, Any]] = None
+    output_data: Optional[Dict[str, Any]] = None
+    reasoning: Optional[str] = None
+    confidence: Optional[int] = None
+    triggered_by: Optional[str] = None
+    review_notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AgentTaskReview(BaseModel):
+    approved: bool
+    notes: Optional[str] = None
+
+
+class AgentTriggerRequest(BaseModel):
+    prompt_id: int
+    version_id: Optional[int] = None
+    llm_config_id: Optional[int] = None   # which user LLM config to use for the agent
+
+
+class OptimizeRequest(BaseModel):
+    version_id: int
+    llm_config_id: int
+    target_token_reduction: int = 20      # % reduction target
+
+
+# ── Model Certifications ──────────────────────────────────────────────────────
+
+class CertificationRequest(BaseModel):
+    version_id: int
+    model_provider: str
+    model_id: str
+    llm_config_id: int
+
+
+class CertificationResponse(BaseModel):
+    id: int
+    prompt_id: int
+    version_id: int
+    model_provider: str
+    model_id: str
+    score: Optional[int] = None
+    status: Optional[str] = None
+    eval_run_id: Optional[int] = None
+    certified_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CertificationMatrixEntry(BaseModel):
+    model_provider: str
+    model_id: str
+    score: Optional[int] = None
+    status: Optional[str] = None
+    certified_at: Optional[datetime] = None

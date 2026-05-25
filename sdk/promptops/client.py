@@ -210,6 +210,81 @@ class PromptOpsClient:
         self._raise_for_status(resp, slug=slug)
         return [PromptVersion.model_validate(v) for v in resp.json()]
 
+    def get_experiment_version(
+        self,
+        slug: str,
+        session_id: str = "",
+        *,
+        environment: Optional[str] = None,
+    ) -> Prompt:
+        """
+        Return the prompt version assigned to this session by an active A/B experiment.
+
+        Assignment is deterministic — the same *session_id* always receives the
+        same variant so a user's experience is consistent across turns.
+        Falls back to the latest approved version when no experiment is running.
+        """
+        env = environment or self._environment
+        params: Dict[str, str] = {"session_id": session_id}
+        if env:
+            params["environment"] = env
+
+        resp = self._http.get(f"{_SDK_PATH}/experiment/{slug}", params=params)
+        self._raise_for_status(resp, slug=slug)
+        return Prompt.model_validate(resp.json())
+
+    def log_output(
+        self,
+        *,
+        prompt_id: int,
+        llm_output: str,
+        version_id: Optional[int] = None,
+        version_str: Optional[str] = None,
+        input_variables: Optional[Dict[str, str]] = None,
+        rendered_prompt: Optional[str] = None,
+        model_id: Optional[str] = None,
+        latency_ms: Optional[int] = None,
+        token_count: Optional[int] = None,
+        cost_cents: Optional[int] = None,
+        feedback: Optional[str] = None,
+        session_id: Optional[str] = None,
+        experiment_id: Optional[int] = None,
+    ) -> None:
+        """
+        Log a production LLM output back to PromptOps (fire-and-forget).
+
+        Logs are the raw material for drift detection, A/B experiment analysis,
+        and the Intelligence Agent. Call this after every agent turn.
+
+        The HTTP request is dispatched on a background thread so it never
+        blocks your hot path.
+        """
+        import threading
+
+        payload = {
+            "prompt_id": prompt_id,
+            "llm_output": llm_output,
+            "version_id": version_id,
+            "version_str": version_str,
+            "input_variables": input_variables,
+            "rendered_prompt": rendered_prompt,
+            "model_id": model_id,
+            "latency_ms": latency_ms,
+            "token_count": token_count,
+            "cost_cents": cost_cents,
+            "feedback": feedback,
+            "session_id": session_id,
+            "experiment_id": experiment_id,
+        }
+
+        def _send():
+            try:
+                self._http.post(f"{_SDK_PATH}/log", json={k: v for k, v in payload.items() if v is not None})
+            except Exception:
+                pass  # logging must never raise
+
+        threading.Thread(target=_send, daemon=True).start()
+
     def invalidate(self, slug: Optional[str] = None) -> None:
         """Manually invalidate the local cache.
 
@@ -378,6 +453,55 @@ class AsyncPromptOpsClient:
         resp = await self._http.get(f"{_SDK_PATH}/prompts/{slug}/versions")
         PromptOpsClient._raise_for_status(resp, slug=slug)
         return [PromptVersion.model_validate(v) for v in resp.json()]
+
+    async def get_experiment_version(
+        self,
+        slug: str,
+        session_id: str = "",
+        *,
+        environment: Optional[str] = None,
+    ) -> Prompt:
+        """Async: return the experiment-assigned prompt version for this session."""
+        env = environment or self._environment
+        params: Dict[str, str] = {"session_id": session_id}
+        if env:
+            params["environment"] = env
+        resp = await self._http.get(f"{_SDK_PATH}/experiment/{slug}", params=params)
+        PromptOpsClient._raise_for_status(resp, slug=slug)
+        return Prompt.model_validate(resp.json())
+
+    async def log_output(
+        self,
+        *,
+        prompt_id: int,
+        llm_output: str,
+        version_id: Optional[int] = None,
+        version_str: Optional[str] = None,
+        input_variables: Optional[Dict[str, str]] = None,
+        rendered_prompt: Optional[str] = None,
+        model_id: Optional[str] = None,
+        latency_ms: Optional[int] = None,
+        token_count: Optional[int] = None,
+        feedback: Optional[str] = None,
+        session_id: Optional[str] = None,
+        experiment_id: Optional[int] = None,
+    ) -> None:
+        """Async fire-and-forget production output log."""
+        payload = {
+            "prompt_id": prompt_id, "llm_output": llm_output,
+            "version_id": version_id, "version_str": version_str,
+            "input_variables": input_variables, "model_id": model_id,
+            "latency_ms": latency_ms, "token_count": token_count,
+            "feedback": feedback, "session_id": session_id,
+            "experiment_id": experiment_id,
+        }
+        try:
+            await self._http.post(
+                f"{_SDK_PATH}/log",
+                json={k: v for k, v in payload.items() if v is not None},
+            )
+        except Exception:
+            pass
 
     def invalidate(self, slug: Optional[str] = None) -> None:
         if slug:

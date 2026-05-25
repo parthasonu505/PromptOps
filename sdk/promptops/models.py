@@ -28,6 +28,8 @@ class Prompt(BaseModel):
     variables: List[Dict[str, Any]] = Field(default_factory=list)
     eval_status: str = "none"    # none | running | passed | failed
     eval_score: Optional[int] = None   # 0-100
+    tags: List[str] = Field(default_factory=list)
+    fragment_slugs: List[str] = Field(default_factory=list)
     updated_at: datetime
 
     def render(self, variables: Optional[Dict[str, str]] = None, strict: bool = False) -> str:
