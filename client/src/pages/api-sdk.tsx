@@ -75,8 +75,20 @@ export default function ApiSdk() {
   });
 
   const createApiKeyMutation = useMutation({
-    mutationFn: async (data: { name: string; permissions: string[]; expiresAt?: string }) => {
+    // 1. Change permissions -> scopes, and expiresAt -> expires_in_days
+    mutationFn: async (data: { name: string; scopes: string[]; expires_in_days?: number }) => {
       const response = await apiRequest("POST", "/api/api-keys", data);
+      
+      // 2. Add error handling so it doesn't crash on HTML pages
+      if (!response.ok) {
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const err = await response.json();
+          throw new Error(err.detail || "Failed to create API key");
+        }
+        throw new Error("Server error: Check if API route exists and auth is passed.");
+      }
+      
       return response.json();
     },
     onSuccess: (data) => {
@@ -104,11 +116,12 @@ export default function ApiSdk() {
   const handleCreateKey = () => {
     const data: any = {
       name: newKeyName,
-      permissions: newKeyPermissions,
+      scopes: newKeyPermissions, // CHANGED from 'permissions' to 'scopes'
     };
     
-    if (newKeyExpiry) {
-      data.expiresAt = newKeyExpiry;
+    if (newKeyExpiry && newKeyExpiry !== "never") {
+      // CHANGED: Backend expects an integer of days, not a date string
+      data.expires_in_days = parseInt(newKeyExpiry, 10);
     }
     
     createApiKeyMutation.mutate(data);

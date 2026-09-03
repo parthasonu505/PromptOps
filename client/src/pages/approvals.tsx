@@ -39,27 +39,30 @@ import {
 
 interface Approval {
   id: number;
-  promptId: number;
-  versionId: number;
-  requesterId: number;
-  approverId?: number;
+  prompt_id: number;
+  version_id: number;
+  requester_id: number;
+  approver_id?: number;
   status: "pending" | "approved" | "rejected";
   comments?: string;
-  requestedAt: string;
-  reviewedAt?: string;
+  requested_at: string;
+  reviewed_at?: string;
   prompt?: {
+    id: number;
     name: string;
     description: string;
     category: string;
   };
   requester?: {
-    firstName: string;
-    lastName: string;
+    id: number;
+    first_name: string;
+    last_name: string;
     username: string;
   };
   approver?: {
-    firstName: string;
-    lastName: string;
+    id: number;
+    first_name: string;
+    last_name: string;
     username: string;
   };
 }
@@ -74,14 +77,14 @@ export default function Approvals() {
   const [reviewAction, setReviewAction] = useState<"approve" | "reject">("approve");
   const [reviewComments, setReviewComments] = useState("");
 
-  // Check if user has approval permissions
+  // Check if user has approval permissions (can approve/reject)
   const canApprove = hasRole(user, ["engineering_lead", "admin"]);
 
   const { data: approvals = [], isLoading } = useQuery({
     queryKey: ["/api/approvals", statusFilter],
     queryFn: async () => {
       const params = new URLSearchParams();
-      if (statusFilter) params.append("status", statusFilter);
+      if (statusFilter) params.append("status_filter", statusFilter);
       
       const response = await fetch(`/api/approvals?${params}`, {
         headers: getAuthHeaders(),
@@ -93,7 +96,8 @@ export default function Approvals() {
       
       return response.json();
     },
-    enabled: canApprove,
+    // All authenticated users can view approvals (their own or all if lead/admin)
+    enabled: !!user,
   });
 
   const reviewApprovalMutation = useMutation({
@@ -349,7 +353,7 @@ export default function Approvals() {
                               <div>
                                 <p className="text-sm font-medium">
                                   {approval.requester 
-                                    ? `${approval.requester.firstName} ${approval.requester.lastName}`
+                                    ? `${approval.requester.first_name} ${approval.requester.last_name}`
                                     : "Unknown User"
                                   }
                                 </p>
@@ -364,19 +368,19 @@ export default function Approvals() {
                           </TableCell>
                           <TableCell>
                             <div className="text-sm">
-                              <div>{format(new Date(approval.requestedAt), "MMM d, yyyy")}</div>
+                              <div>{format(new Date(approval.requested_at), "MMM d, yyyy")}</div>
                               <div className="text-xs text-muted-foreground">
-                                {format(new Date(approval.requestedAt), "h:mm a")}
+                                {format(new Date(approval.requested_at), "h:mm a")}
                               </div>
                             </div>
                           </TableCell>
                           <TableCell>
-                            {approval.reviewedAt ? (
+                            {approval.reviewed_at ? (
                               <div className="text-sm">
-                                <div>{format(new Date(approval.reviewedAt), "MMM d, yyyy")}</div>
+                                <div>{format(new Date(approval.reviewed_at), "MMM d, yyyy")}</div>
                                 <div className="text-xs text-muted-foreground">
                                   by {approval.approver 
-                                    ? `${approval.approver.firstName} ${approval.approver.lastName}`
+                                    ? `${approval.approver.first_name} ${approval.approver.last_name}`
                                     : "Unknown"
                                   }
                                 </div>
@@ -390,7 +394,8 @@ export default function Approvals() {
                               <Button variant="ghost" size="sm">
                                 <Eye className="h-4 w-4" />
                               </Button>
-                              {approval.status === "pending" && (
+                              {/* Only show approve/reject buttons for leads and admins */}
+                              {canApprove && approval.status === "pending" && (
                                 <>
                                   <Button
                                     variant="ghost"
@@ -442,7 +447,7 @@ export default function Approvals() {
               <div>
                 <Label className="text-sm font-medium">Prompt</Label>
                 <p className="text-sm text-muted-foreground">
-                  {selectedApproval.prompt?.name || `Prompt #${selectedApproval.promptId}`}
+                  {selectedApproval.prompt?.name || `Prompt #${selectedApproval.prompt_id}`}
                 </p>
               </div>
               
@@ -450,7 +455,7 @@ export default function Approvals() {
                 <Label className="text-sm font-medium">Requester</Label>
                 <p className="text-sm text-muted-foreground">
                   {selectedApproval.requester 
-                    ? `${selectedApproval.requester.firstName} ${selectedApproval.requester.lastName}`
+                    ? `${selectedApproval.requester.first_name} ${selectedApproval.requester.last_name}`
                     : "Unknown User"
                   }
                 </p>

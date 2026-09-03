@@ -19,7 +19,8 @@ from schemas import (
     UserLlmConfig as UserLlmConfigSchema, UserLlmConfigCreate, UserLlmConfigUpdate,
     Favorite as FavoriteSchema, FavoriteCreate,
     PromptComparison as PromptComparisonSchema, PromptComparisonCreate, PromptComparisonUpdate,
-    Approval as ApprovalSchema, ApprovalCreate, ApprovalUpdate,
+    Approval as ApprovalSchema, ApprovalCreate, ApprovalUpdate, ApprovalWithDetails,
+    UserBasicInfo, PromptBasicInfo,
     ApiKeyCreate, ApiKeyResponse, ApiKeyCreated,
     PromptSDK, PromptRenderRequest, PromptRenderResponse,
     PromptEvalCreate, PromptEvalUpdate, PromptEvalResponse,
@@ -163,13 +164,31 @@ async def create_prompt(
     current_user: User = Depends(require_roles(ENGINEER_ROLES)),
     db: Session = Depends(get_db)
 ):
-    """Create a new prompt."""
+    """Create a new prompt with an initial version."""
     prompt = Prompt(
         **prompt_data.dict(),
         author_id=current_user.id
     )
     
     db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+    
+    # Create initial version (v1.0.0) for the prompt
+    initial_version = PromptVersion(
+        prompt_id=prompt.id,
+        version="1.0.0",
+        content=prompt.content,
+        changelog="Initial version",
+        author_id=current_user.id,
+        status="draft"
+    )
+    db.add(initial_version)
+    db.commit()
+    db.refresh(initial_version)
+    
+    # Set the current version
+    prompt.current_version_id = initial_version.id
     db.commit()
     db.refresh(prompt)
     
@@ -461,13 +480,13 @@ async def create_prompt_comparison(
 
 
 # Approval routes
-@router.get("/approvals", response_model=List[ApprovalSchema])
+@router.get("/approvals", response_model=List[ApprovalWithDetails])
 async def get_approvals(
     status_filter: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get approvals (filtered by role)."""
+    """Get approvals with related details (filtered by role)."""
     query = db.query(Approval)
     
     if status_filter:
@@ -481,8 +500,57 @@ async def get_approvals(
         # Others can only see their own requests
         query = query.filter(Approval.requester_id == current_user.id)
     
-    approvals = query.all()
-    return [ApprovalSchema.from_orm(approval) for approval in approvals]
+    approvals = query.order_by(Approval.requested_at.desc()).all()
+    
+    # Build response with related data
+    result = []
+    for approval in approvals:
+        # Get related prompt
+        prompt = db.query(Prompt).filter(Prompt.id == approval.prompt_id).first()
+        prompt_info = PromptBasicInfo(
+            id=prompt.id,
+            name=prompt.name,
+            description=prompt.description,
+            category=prompt.category
+        ) if prompt else None
+        
+        # Get requester
+        requester = db.query(User).filter(User.id == approval.requester_id).first()
+        requester_info = UserBasicInfo(
+            id=requester.id,
+            username=requester.username,
+            first_name=requester.first_name,
+            last_name=requester.last_name
+        ) if requester else None
+        
+        # Get approver if exists
+        approver_info = None
+        if approval.approver_id:
+            approver = db.query(User).filter(User.id == approval.approver_id).first()
+            if approver:
+                approver_info = UserBasicInfo(
+                    id=approver.id,
+                    username=approver.username,
+                    first_name=approver.first_name,
+                    last_name=approver.last_name
+                )
+        
+        result.append(ApprovalWithDetails(
+            id=approval.id,
+            prompt_id=approval.prompt_id,
+            version_id=approval.version_id,
+            requester_id=approval.requester_id,
+            approver_id=approval.approver_id,
+            status=approval.status,
+            comments=approval.comments,
+            requested_at=approval.requested_at,
+            reviewed_at=approval.reviewed_at,
+            prompt=prompt_info,
+            requester=requester_info,
+            approver=approver_info
+        ))
+    
+    return result
 
 
 @router.post("/approvals", response_model=ApprovalSchema)
@@ -498,9 +566,30 @@ async def create_approval(
     eval run (eval_status == 'passed') before approval can be requested.
     Admins may bypass this gate.
     """
+    # Verify the prompt exists
+    prompt = db.query(Prompt).filter(Prompt.id == approval_data.prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Prompt not found")
+
     version = db.query(PromptVersion).filter(PromptVersion.id == approval_data.version_id).first()
     if not version:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Version not found")
+
+    # Check if there's already a pending approval for this version
+    existing_approval = (
+        db.query(Approval)
+        .filter(
+            Approval.prompt_id == approval_data.prompt_id,
+            Approval.version_id == approval_data.version_id,
+            Approval.status == "pending"
+        )
+        .first()
+    )
+    if existing_approval:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="There is already a pending approval request for this version"
+        )
 
     # Eval gate — only block non-admins when active eval suites exist
     if current_user.role not in ADMIN_ROLES:
@@ -519,8 +608,72 @@ async def create_approval(
                 ),
             )
 
-    approval = Approval(**approval_data.dict())
+    # Create approval with requester_id from current user and status as pending
+    approval = Approval(
+        prompt_id=approval_data.prompt_id,
+        version_id=approval_data.version_id,
+        requester_id=current_user.id,
+        status="pending",
+        comments=approval_data.comments
+    )
     db.add(approval)
+    
+    # Update the prompt status to pending_review
+    prompt.status = "pending_review"
+    
+    db.commit()
+    db.refresh(approval)
+    return ApprovalSchema.from_orm(approval)
+
+
+@router.put("/approvals/{approval_id}", response_model=ApprovalSchema)
+async def update_approval(
+    approval_id: int,
+    approval_update: ApprovalUpdate,
+    current_user: User = Depends(require_roles(LEAD_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """
+    Update an approval request (approve or reject).
+    
+    Only leads and admins can approve/reject. When approved, the prompt status
+    is updated to 'approved' and the version becomes the current version.
+    """
+    approval = db.query(Approval).filter(Approval.id == approval_id).first()
+    if not approval:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Approval not found")
+    
+    if approval.status != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot update approval that is already {approval.status}"
+        )
+    
+    # Update approval fields
+    if approval_update.status:
+        approval.status = approval_update.status
+    if approval_update.comments is not None:
+        approval.comments = approval_update.comments
+    
+    approval.approver_id = current_user.id
+    approval.reviewed_at = datetime.utcnow()
+    
+    # Update prompt and version status based on approval decision
+    prompt = db.query(Prompt).filter(Prompt.id == approval.prompt_id).first()
+    version = db.query(PromptVersion).filter(PromptVersion.id == approval.version_id).first()
+    
+    if approval_update.status == "approved":
+        if prompt:
+            prompt.status = "approved"
+            prompt.current_version_id = approval.version_id
+        if version:
+            version.status = "approved"
+    elif approval_update.status == "rejected":
+        if prompt:
+            prompt.status = "rejected"
+        if version:
+            version.status = "rejected"
+    
     db.commit()
     db.refresh(approval)
     return ApprovalSchema.from_orm(approval)

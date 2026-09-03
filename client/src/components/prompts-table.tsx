@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Table,
@@ -16,17 +16,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { getAuthHeaders } from "@/lib/auth";
+import { apiRequest } from "@/lib/queryClient";
 import { 
   Code, Eye, Star, Edit, TestTube, History, MoreVertical,
-  Filter, Download, Grid3X3, List, ChevronLeft, ChevronRight
+  Filter, Download, Grid3X3, List, ChevronLeft, ChevronRight, Send
 } from "lucide-react";
 
 interface Prompt {
@@ -39,6 +51,7 @@ interface Prompt {
   environment: string;
   accessLevel: string;
   authorId: number;
+  currentVersionId?: number;
   usageCount: number;
   rating: number;
   createdAt: string;
@@ -47,6 +60,8 @@ interface Prompt {
 
 export function PromptsTable() {
   const { user } = useAuth();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [filters, setFilters] = useState({
     category: "",
     status: "",
@@ -55,6 +70,11 @@ export function PromptsTable() {
   });
   const [selectedPrompts, setSelectedPrompts] = useState<number[]>([]);
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
+  
+  // Submit for approval dialog state
+  const [approvalDialogOpen, setApprovalDialogOpen] = useState(false);
+  const [selectedPromptForApproval, setSelectedPromptForApproval] = useState<Prompt | null>(null);
+  const [approvalComments, setApprovalComments] = useState("");
 
   const { data: prompts = [], isLoading } = useQuery({
     queryKey: ["/api/prompts", filters],
@@ -75,6 +95,81 @@ export function PromptsTable() {
       return response.json();
     },
   });
+
+  // Fetch versions for a prompt
+  const { data: versions = [] } = useQuery({
+    queryKey: ["/api/prompt-versions", selectedPromptForApproval?.id],
+    queryFn: async () => {
+      if (!selectedPromptForApproval) return [];
+      const response = await fetch(`/api/prompt-versions/${selectedPromptForApproval.id}`, {
+        headers: getAuthHeaders(),
+      });
+      if (!response.ok) {
+        throw new Error("Failed to fetch versions");
+      }
+      return response.json();
+    },
+    enabled: !!selectedPromptForApproval,
+  });
+
+  // Submit for approval mutation
+  const submitForApprovalMutation = useMutation({
+    mutationFn: async ({ promptId, versionId, comments }: { promptId: number; versionId: number; comments?: string }) => {
+      const response = await apiRequest("POST", "/api/approvals", {
+        prompt_id: promptId,
+        version_id: versionId,
+        comments,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/prompts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/approvals"] });
+      toast({
+        title: "Success",
+        description: "Prompt submitted for approval successfully",
+      });
+      setApprovalDialogOpen(false);
+      setSelectedPromptForApproval(null);
+      setApprovalComments("");
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to submit for approval",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleSubmitForApproval = (prompt: Prompt) => {
+    setSelectedPromptForApproval(prompt);
+    setApprovalDialogOpen(true);
+  };
+
+  const handleConfirmApproval = () => {
+    if (!selectedPromptForApproval) return;
+    
+    // Get the latest version or current version
+    const latestVersion = versions.length > 0 ? versions[0] : null;
+    const versionId = selectedPromptForApproval.currentVersionId || latestVersion?.id;
+    
+    if (!versionId) {
+      // If no version exists, we need to create one first
+      toast({
+        title: "Error",
+        description: "No version found for this prompt. Please create a version first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    submitForApprovalMutation.mutate({
+      promptId: selectedPromptForApproval.id,
+      versionId: versionId,
+      comments: approvalComments || undefined,
+    });
+  };
 
   const handleSelectAll = (checked: boolean) => {
     setSelectedPrompts(checked ? prompts.map((p: Prompt) => p.id) : []);
@@ -341,6 +436,17 @@ export function PromptsTable() {
                         <Button variant="ghost" size="sm">
                           <History className="h-4 w-4" />
                         </Button>
+                        {/* Submit for Approval button - only show for draft or rejected prompts */}
+                        {(prompt.status === "draft" || prompt.status === "rejected") && (
+                          <Button 
+                            variant="ghost" 
+                            size="sm"
+                            onClick={() => handleSubmitForApproval(prompt)}
+                            title="Submit for Approval"
+                          >
+                            <Send className="h-4 w-4 text-blue-600" />
+                          </Button>
+                        )}
                         <Button variant="ghost" size="sm">
                           <MoreVertical className="h-4 w-4" />
                         </Button>
@@ -389,6 +495,67 @@ export function PromptsTable() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Submit for Approval Dialog */}
+      <Dialog open={approvalDialogOpen} onOpenChange={setApprovalDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Submit for Approval</DialogTitle>
+            <DialogDescription>
+              Submit this prompt for review by an engineering lead or admin.
+            </DialogDescription>
+          </DialogHeader>
+          
+          {selectedPromptForApproval && (
+            <div className="space-y-4">
+              <div>
+                <Label className="text-sm font-medium">Prompt</Label>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {selectedPromptForApproval.name}
+                </p>
+              </div>
+              
+              <div>
+                <Label className="text-sm font-medium">Current Status</Label>
+                <div className="mt-1">
+                  {getStatusBadge(selectedPromptForApproval.status)}
+                </div>
+              </div>
+              
+              <div>
+                <Label htmlFor="approval-comments">Comments (Optional)</Label>
+                <Textarea
+                  id="approval-comments"
+                  placeholder="Add any notes for the reviewer..."
+                  value={approvalComments}
+                  onChange={(e) => setApprovalComments(e.target.value)}
+                  rows={3}
+                  className="mt-1"
+                />
+              </div>
+            </div>
+          )}
+          
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setApprovalDialogOpen(false);
+                setSelectedPromptForApproval(null);
+                setApprovalComments("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmApproval}
+              disabled={submitForApprovalMutation.isPending}
+            >
+              {submitForApprovalMutation.isPending ? "Submitting..." : "Submit for Approval"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

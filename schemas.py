@@ -317,12 +317,12 @@ class PromptComparison(PromptComparisonBase):
 class ApprovalBase(BaseModel):
     prompt_id: int
     version_id: int
-    requester_id: int
-    status: str
     comments: Optional[str] = None
 
 
 class ApprovalCreate(ApprovalBase):
+    """Schema for creating a new approval request. 
+    requester_id and status are set automatically by the backend."""
     pass
 
 
@@ -332,12 +332,59 @@ class ApprovalUpdate(BaseModel):
     approver_id: Optional[int] = None
 
 
-class Approval(ApprovalBase):
+class Approval(BaseModel):
+    """Full approval response schema with all fields."""
     id: int
+    prompt_id: int
+    version_id: int
+    requester_id: int
     approver_id: Optional[int] = None
+    status: str
+    comments: Optional[str] = None
     requested_at: datetime
     reviewed_at: Optional[datetime] = None
 
+    class Config:
+        from_attributes = True
+
+
+class UserBasicInfo(BaseModel):
+    """Basic user info for embedding in responses."""
+    id: int
+    username: str
+    first_name: str
+    last_name: str
+    
+    class Config:
+        from_attributes = True
+
+
+class PromptBasicInfo(BaseModel):
+    """Basic prompt info for embedding in responses."""
+    id: int
+    name: str
+    description: Optional[str] = None
+    category: str
+    
+    class Config:
+        from_attributes = True
+
+
+class ApprovalWithDetails(BaseModel):
+    """Approval response with related prompt and user details."""
+    id: int
+    prompt_id: int
+    version_id: int
+    requester_id: int
+    approver_id: Optional[int] = None
+    status: str
+    comments: Optional[str] = None
+    requested_at: datetime
+    reviewed_at: Optional[datetime] = None
+    prompt: Optional[PromptBasicInfo] = None
+    requester: Optional[UserBasicInfo] = None
+    approver: Optional[UserBasicInfo] = None
+    
     class Config:
         from_attributes = True
 
