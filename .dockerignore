@@ -82,4 +82,3 @@ attached_assets/*.gif
 scripts
 
 # Lock files (will be regenerated)
-# package-lock.json  # Keep this for reproducible builds
