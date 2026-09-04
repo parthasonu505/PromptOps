@@ -18,6 +18,15 @@ import {
 import { GitHubIntegration } from "./github-integration";
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Health check endpoint (no auth required)
+  app.get('/api/health', (req, res) => {
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      version: process.env.npm_package_version || '1.0.0'
+    });
+  });
+
   // GitHub Integration setup
   let githubIntegration: GitHubIntegration | null = null;
 
