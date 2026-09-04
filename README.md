@@ -248,8 +248,33 @@ For support and questions:
 
 ## 🔄 Recent Updates
 
+- **September 4, 2026**: Major feature implementation
+  - **LLM Comparison**: Compare prompts across multiple AI models (GPT-4o, Claude, Gemini, etc.)
+  - **Testing Sandbox**: Real-time prompt testing with actual LLM responses
+  - **Version Control**: Full version history with rollback capabilities
+  - **LLM Settings**: Configure API keys for OpenAI, Anthropic, Google Gemini, and GitHub Models
+  - **GitHub Models Integration**: Free access to AI models via GitHub
+  - **Approvals System**: Complete approval workflow for production prompts
 - **July 2, 2025**: Comprehensive platform testing and bug fixes completed
 - **July 1, 2025**: Initial platform development and core features implemented
+
+## 🔑 Environment Variables
+
+```env
+DATABASE_URL=postgresql://...       # PostgreSQL connection string
+SESSION_SECRET=your-secret         # Session encryption key
+GOOGLE_API_KEY=your-api-key       # Google Gemini API key (optional)
+GITHUB_TOKEN=your-token           # GitHub token for GitHub Models (optional)
+ENCRYPTION_KEY=your-key           # Encryption key for storing API keys
+```
+
+## 🎯 Quick Start
+
+1. **Install dependencies**: `npm install`
+2. **Set up database**: `npm run db:push`
+3. **Seed initial data**: `npx tsx --env-file=.env server/seed.ts`
+4. **Start server**: `npm run dev`
+5. **Login**: Username: `admin`, Password: `admin123`
 
 ---
 

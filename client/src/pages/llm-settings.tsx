@@ -49,24 +49,26 @@ export default function LLMSettings() {
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
 
   // Fetch available LLM providers
-  const { data: providers = [], isLoading: providersLoading } = useQuery({
+  const { data: providers = [], isLoading: providersLoading } = useQuery<LLMProvider[]>({
     queryKey: ['/api/llm-providers'],
-    meta: { headers: getAuthHeaders() },
+    queryFn: async () => {
+      const res = await fetch('/api/llm-providers', { headers: getAuthHeaders() });
+      return res.ok ? res.json() : [];
+    },
   });
 
   // Fetch user's LLM configurations
-  const { data: userConfigs = [], isLoading: configsLoading } = useQuery({
+  const { data: userConfigs = [], isLoading: configsLoading } = useQuery<UserLLMConfig[]>({
     queryKey: ['/api/llm-configs'],
-    meta: { headers: getAuthHeaders() },
+    queryFn: async () => {
+      const res = await fetch('/api/llm-configs', { headers: getAuthHeaders() });
+      return res.ok ? res.json() : [];
+    },
   });
 
   const addConfigMutation = useMutation({
     mutationFn: async (data: { providerId: number; apiKey: string }) => {
-      return apiRequest('/api/llm-configs', {
-        method: 'POST',
-        body: JSON.stringify(data),
-        headers: getAuthHeaders(),
-      });
+      return apiRequest('POST', '/api/llm-configs', data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/llm-configs'] });
@@ -89,10 +91,7 @@ export default function LLMSettings() {
 
   const deleteConfigMutation = useMutation({
     mutationFn: async (configId: number) => {
-      return apiRequest(`/api/llm-configs/${configId}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders(),
-      });
+      return apiRequest('DELETE', `/api/llm-configs/${configId}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/llm-configs'] });

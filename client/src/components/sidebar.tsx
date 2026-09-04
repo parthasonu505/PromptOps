@@ -1,5 +1,6 @@
 import { Link, useLocation } from "wouter";
-import { useAuth, hasRole } from "@/lib/auth";
+import { useQuery } from "@tanstack/react-query";
+import { useAuth, hasRole, getAuthHeaders } from "@/lib/auth";
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -14,6 +15,28 @@ export function Sidebar() {
   const [location] = useLocation();
   const { user, logout } = useAuth();
   const { theme, setTheme } = useTheme();
+
+  // Fetch prompts count
+  const { data: prompts = [] } = useQuery({
+    queryKey: ["/api/prompts"],
+    queryFn: async () => {
+      const response = await fetch("/api/prompts", { headers: getAuthHeaders() });
+      if (!response.ok) return [];
+      return response.json();
+    },
+    enabled: !!user,
+  });
+
+  // Fetch pending approvals count (for leads/admins)
+  const { data: approvals = [] } = useQuery({
+    queryKey: ["/api/approvals", "pending"],
+    queryFn: async () => {
+      const response = await fetch("/api/approvals?status=pending", { headers: getAuthHeaders() });
+      if (!response.ok) return [];
+      return response.json();
+    },
+    enabled: !!user && hasRole(user, ["engineering_lead", "admin"]),
+  });
 
   if (!user) return null;
 
@@ -41,7 +64,7 @@ export function Sidebar() {
           <div className="flex items-center space-x-3">
             <div className="w-10 h-10 bg-sidebar-accent rounded-full flex items-center justify-center">
               <span className="text-sidebar-accent-foreground font-medium text-sm">
-                {getInitials(user.firstName, user.lastName)}
+                {getInitials(user.firstName || "", user.lastName || "")}
               </span>
             </div>
             <div className="flex-1 min-w-0">
@@ -69,7 +92,7 @@ export function Sidebar() {
               <Code className="mr-3 h-4 w-4" />
               Prompts
               <Badge variant="secondary" className="ml-auto">
-                24
+                {prompts.length}
               </Badge>
             </a>
           </Link>
@@ -140,9 +163,11 @@ export function Sidebar() {
               }`}>
                 <CheckCircle className="mr-3 h-4 w-4" />
                 Approvals
-                <Badge variant="secondary" className="ml-auto bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-200">
-                  3
-                </Badge>
+                {approvals.length > 0 && (
+                  <Badge variant="secondary" className="ml-auto bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-200">
+                    {approvals.length}
+                  </Badge>
+                )}
               </a>
             </Link>
           )}

@@ -18,6 +18,7 @@ export interface IStorage {
   getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
   updateUser(id: number, user: Partial<InsertUser>): Promise<User | undefined>;
+  deleteUser(id: number): Promise<boolean>;
   getUsers(): Promise<User[]>;
 
   // Prompts
@@ -134,6 +135,11 @@ export class DatabaseStorage implements IStorage {
 
   async getUsers(): Promise<User[]> {
     return db.select().from(users).orderBy(desc(users.createdAt));
+  }
+
+  async deleteUser(id: number): Promise<boolean> {
+    const result = await db.delete(users).where(eq(users.id, id)).returning();
+    return result.length > 0;
   }
 
   // Prompts
@@ -263,9 +269,7 @@ export class DatabaseStorage implements IStorage {
     return approval || undefined;
   }
 
-  async getApprovals(filters?: { status?: string; approverId?: number }): Promise<Approval[]> {
-    let query = db.select().from(approvals);
-    
+  async getApprovals(filters?: { status?: string; approverId?: number; requesterId?: number }): Promise<any[]> {
     const conditions = [];
     
     if (filters?.status) {
@@ -276,11 +280,59 @@ export class DatabaseStorage implements IStorage {
       conditions.push(eq(approvals.approverId, filters.approverId));
     }
     
-    if (conditions.length > 0) {
-      query = query.where(and(...conditions));
+    if (filters?.requesterId) {
+      conditions.push(eq(approvals.requesterId, filters.requesterId));
     }
     
-    return query.orderBy(desc(approvals.requestedAt));
+    // Get approvals with prompt and user details using joins
+    const results = await db
+      .select({
+        id: approvals.id,
+        promptId: approvals.promptId,
+        versionId: approvals.versionId,
+        requesterId: approvals.requesterId,
+        approverId: approvals.approverId,
+        status: approvals.status,
+        comments: approvals.comments,
+        requestedAt: approvals.requestedAt,
+        reviewedAt: approvals.reviewedAt,
+        promptName: prompts.name,
+        promptDescription: prompts.description,
+        promptCategory: prompts.category,
+        requesterUsername: users.username,
+        requesterFirstName: users.firstName,
+        requesterLastName: users.lastName,
+      })
+      .from(approvals)
+      .leftJoin(prompts, eq(approvals.promptId, prompts.id))
+      .leftJoin(users, eq(approvals.requesterId, users.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(approvals.requestedAt));
+    
+    // Transform results to match expected format
+    return results.map(r => ({
+      id: r.id,
+      promptId: r.promptId,
+      versionId: r.versionId,
+      requesterId: r.requesterId,
+      approverId: r.approverId,
+      status: r.status,
+      comments: r.comments,
+      requestedAt: r.requestedAt,
+      reviewedAt: r.reviewedAt,
+      prompt: {
+        id: r.promptId,
+        name: r.promptName || `Prompt #${r.promptId}`,
+        description: r.promptDescription || '',
+        category: r.promptCategory || 'general',
+      },
+      requester: {
+        id: r.requesterId,
+        username: r.requesterUsername || 'unknown',
+        firstName: r.requesterFirstName || '',
+        lastName: r.requesterLastName || '',
+      },
+    }));
   }
 
   async createApproval(insertApproval: InsertApproval): Promise<Approval> {

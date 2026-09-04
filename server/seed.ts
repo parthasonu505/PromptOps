@@ -1,198 +1,59 @@
 import { db } from "./db";
-import { llmProviders, users } from "@shared/schema";
-import { eq } from "drizzle-orm";
-import bcrypt from "bcrypt";
+import { users, prompts, promptVersions, llmProviders } from "@shared/schema";
+import { hashPassword } from "./auth";
+import { eq, or } from "drizzle-orm";
 
-// Seed LLM Providers
-const seedProviders = async () => {
-  console.log("Seeding LLM providers...");
+async function seed() {
+  console.log("Starting seed...");
+  
+  const existing = await db.select().from(users).where(eq(users.username, "admin")).limit(1);
+  if (existing.length === 0) {
+    const pwd = await hashPassword("admin123");
+    await db.insert(users).values([
+      { username: "admin", email: "admin@promptops.com", password: pwd, role: "admin", firstName: "Admin", lastName: "User", isActive: true },
+      { username: "lead", email: "lead@promptops.com", password: pwd, role: "engineering_lead", firstName: "Sarah", lastName: "Chen", isActive: true },
+      { username: "engineer", email: "engineer@promptops.com", password: pwd, role: "prompt_engineer", firstName: "John", lastName: "Doe", isActive: true },
+    ]);
+    console.log("Created users (password: admin123)");
+  }
 
-  const providersData = [
-    {
-      name: "openai",
-      displayName: "OpenAI",
-      baseUrl: "https://api.openai.com/v1",
-      apiKeyRequired: true,
-      models: [
-        {
-          id: "gpt-4o",
-          name: "GPT-4o",
-          contextWindow: 128000,
-          inputCostPer1k: 250, // $0.0025 per 1k tokens in cents
-          outputCostPer1k: 1000, // $0.01 per 1k tokens in cents
-          capabilities: ["text", "vision", "function-calling"]
-        },
-        {
-          id: "gpt-4o-mini",
-          name: "GPT-4o Mini",
-          contextWindow: 128000,
-          inputCostPer1k: 15, // $0.00015 per 1k tokens in cents
-          outputCostPer1k: 60, // $0.0006 per 1k tokens in cents
-          capabilities: ["text", "vision", "function-calling"]
-        },
-        {
-          id: "gpt-3.5-turbo",
-          name: "GPT-3.5 Turbo",
-          contextWindow: 16385,
-          inputCostPer1k: 50, // $0.0005 per 1k tokens in cents
-          outputCostPer1k: 150, // $0.0015 per 1k tokens in cents
-          capabilities: ["text", "function-calling"]
-        }
-      ],
-      isActive: true
-    },
-    {
-      name: "anthropic",
-      displayName: "Anthropic",
-      baseUrl: "https://api.anthropic.com",
-      apiKeyRequired: true,
-      models: [
-        {
-          id: "claude-sonnet-4-20250514",
-          name: "Claude 4.0 Sonnet",
-          contextWindow: 200000,
-          inputCostPer1k: 300, // $0.003 per 1k tokens in cents
-          outputCostPer1k: 1500, // $0.015 per 1k tokens in cents
-          capabilities: ["text", "vision", "document-analysis"]
-        },
-        {
-          id: "claude-3-7-sonnet-20250219",
-          name: "Claude 3.7 Sonnet",
-          contextWindow: 200000,
-          inputCostPer1k: 300, // $0.003 per 1k tokens in cents
-          outputCostPer1k: 1500, // $0.015 per 1k tokens in cents
-          capabilities: ["text", "vision", "document-analysis"]
-        },
-        {
-          id: "claude-3-5-haiku-20241022",
-          name: "Claude 3.5 Haiku",
-          contextWindow: 200000,
-          inputCostPer1k: 100, // $0.001 per 1k tokens in cents
-          outputCostPer1k: 500, // $0.005 per 1k tokens in cents
-          capabilities: ["text", "vision"]
-        }
-      ],
-      isActive: true
-    },
-    {
-      name: "google",
-      displayName: "Google AI",
+  // Check if gemini provider exists
+  const geminiExists = await db.select().from(llmProviders).where(eq(llmProviders.name, "gemini")).limit(1);
+  if (geminiExists.length === 0) {
+    await db.insert(llmProviders).values({
+      name: "gemini",
+      displayName: "Google Gemini",
       baseUrl: "https://generativelanguage.googleapis.com/v1beta",
       apiKeyRequired: true,
       models: [
-        {
-          id: "gemini-2.5-flash",
-          name: "Gemini 2.5 Flash",
-          contextWindow: 1048576,
-          inputCostPer1k: 7.5, // $0.000075 per 1k tokens in cents
-          outputCostPer1k: 30, // $0.0003 per 1k tokens in cents
-          capabilities: ["text", "vision", "audio", "video"]
-        },
-        {
-          id: "gemini-2.5-pro",
-          name: "Gemini 2.5 Pro",
-          contextWindow: 2097152,
-          inputCostPer1k: 125, // $0.00125 per 1k tokens in cents
-          outputCostPer1k: 500, // $0.005 per 1k tokens in cents
-          capabilities: ["text", "vision", "audio", "video", "code-execution"]
-        },
-        {
-          id: "gemini-1.5-flash",
-          name: "Gemini 1.5 Flash",
-          contextWindow: 1048576,
-          inputCostPer1k: 7.5, // $0.000075 per 1k tokens in cents
-          outputCostPer1k: 30, // $0.0003 per 1k tokens in cents
-          capabilities: ["text", "vision", "audio", "video"]
-        }
+        { id: "gemini-3.6-flash", name: "Gemini 3.6 Flash", contextWindow: 1000000, inputCostPer1k: 0, outputCostPer1k: 0, capabilities: ["text", "vision"] },
+        { id: "gemini-flash-latest", name: "Gemini Flash (Latest)", contextWindow: 1000000, inputCostPer1k: 0, outputCostPer1k: 0, capabilities: ["text", "vision"] },
+        { id: "gemini-pro-latest", name: "Gemini Pro (Latest)", contextWindow: 2000000, inputCostPer1k: 1.25, outputCostPer1k: 5.0, capabilities: ["text", "vision", "code"] },
       ],
       isActive: true
-    }
-  ];
-
-  for (const providerData of providersData) {
-    // Check if provider already exists
-    const existingProvider = await db.select()
-      .from(llmProviders)
-      .where(eq(llmProviders.name, providerData.name))
-      .limit(1);
-
-    if (existingProvider.length === 0) {
-      await db.insert(llmProviders).values(providerData);
-      console.log(`✓ Seeded provider: ${providerData.displayName}`);
-    } else {
-      // Update existing provider with latest models and pricing
-      await db.update(llmProviders)
-        .set({
-          models: providerData.models,
-          updatedAt: new Date()
-        })
-        .where(eq(llmProviders.name, providerData.name));
-      console.log(`✓ Updated provider: ${providerData.displayName}`);
-    }
+    });
+    console.log("Created Gemini provider");
   }
-};
 
-// Seed sample users for development
-const seedUsers = async () => {
-  console.log("Seeding sample users...");
-
-  const sampleUsers = [
-    {
-      username: "admin",
-      email: "admin@promptops.dev",
-      password: await bcrypt.hash("admin123", 10),
-      role: "admin",
-      firstName: "Admin",
-      lastName: "User"
-    },
-    {
-      username: "engineer",
-      email: "engineer@promptops.dev",
-      password: await bcrypt.hash("engineer123", 10),
-      role: "prompt_engineer",
-      firstName: "Prompt",
-      lastName: "Engineer"
-    },
-    {
-      username: "lead",
-      email: "lead@promptops.dev",
-      password: await bcrypt.hash("lead123", 10),
-      role: "engineering_lead",
-      firstName: "Engineering",
-      lastName: "Lead"
-    }
-  ];
-
-  for (const userData of sampleUsers) {
-    // Check if user already exists
-    const existingUser = await db.select()
-      .from(users)
-      .where(eq(users.username, userData.username))
-      .limit(1);
-
-    if (existingUser.length === 0) {
-      await db.insert(users).values(userData);
-      console.log(`✓ Seeded user: ${userData.username} (${userData.role})`);
-    } else {
-      console.log(`✓ User already exists: ${userData.username}`);
-    }
+  // Check if github_models provider exists
+  const githubExists = await db.select().from(llmProviders).where(eq(llmProviders.name, "github_models")).limit(1);
+  if (githubExists.length === 0) {
+    await db.insert(llmProviders).values({
+      name: "github_models",
+      displayName: "GitHub Models",
+      baseUrl: "https://models.github.ai/inference",
+      apiKeyRequired: true,
+      models: [
+        { id: "openai/gpt-4o", name: "GPT-4o (GitHub)", contextWindow: 128000, inputCostPer1k: 0, outputCostPer1k: 0, capabilities: ["text", "vision"] },
+        { id: "openai/gpt-4o-mini", name: "GPT-4o Mini (GitHub)", contextWindow: 128000, inputCostPer1k: 0, outputCostPer1k: 0, capabilities: ["text", "vision"] },
+        { id: "meta/llama-3.1-70b-instruct", name: "Llama 3.1 70B", contextWindow: 128000, inputCostPer1k: 0, outputCostPer1k: 0, capabilities: ["text"] },
+      ],
+      isActive: true
+    });
+    console.log("Created GitHub Models provider");
   }
-};
 
-export async function seedDatabase() {
-  try {
-    await seedProviders();
-    await seedUsers();
-    console.log("✅ Database seeding completed successfully");
-  } catch (error) {
-    console.error("❌ Database seeding failed:", error);
-    throw error;
-  }
+  console.log("Seed completed!");
 }
 
-// Run seeding if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  seedDatabase()
-    .then(() => process.exit(0))
-    .catch(() => process.exit(1));
-}
+seed().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });

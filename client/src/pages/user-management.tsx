@@ -114,12 +114,12 @@ export default function UserManagement() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setCreateUserDialogOpen(false);
+      form.reset();
       toast({
         title: "Success",
         description: "User created successfully",
       });
-      setCreateUserDialogOpen(false);
-      form.reset();
     },
     onError: (error: Error) => {
       toast({
@@ -132,6 +132,90 @@ export default function UserManagement() {
 
   const onSubmit = (data: CreateUserFormData) => {
     createUserMutation.mutate(data);
+  };
+
+  // Update user role mutation
+  const updateRoleMutation = useMutation({
+    mutationFn: async ({ userId, role }: { userId: number; role: string }) => {
+      const response = await apiRequest("PUT", `/api/users/${userId}/role`, { role });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({
+        title: "Success",
+        description: "User role updated successfully",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Toggle user status mutation
+  const toggleStatusMutation = useMutation({
+    mutationFn: async ({ userId, isActive }: { userId: number; isActive: boolean }) => {
+      const response = await apiRequest("PUT", `/api/users/${userId}/status`, { isActive });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({
+        title: "Success",
+        description: "User status updated successfully",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Delete user mutation
+  const deleteUserMutation = useMutation({
+    mutationFn: async (userId: number) => {
+      const response = await apiRequest("DELETE", `/api/users/${userId}`);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || "Failed to delete user");
+      }
+      return;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({
+        title: "Success",
+        description: "User deleted successfully",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleRoleChange = (userId: number, newRole: string) => {
+    updateRoleMutation.mutate({ userId, role: newRole });
+  };
+
+  const handleToggleStatus = (userId: number, currentStatus: boolean) => {
+    toggleStatusMutation.mutate({ userId, isActive: !currentStatus });
+  };
+
+  const handleDeleteUser = (userId: number) => {
+    if (window.confirm("Are you sure you want to delete this user? This action cannot be undone.")) {
+      deleteUserMutation.mutate(userId);
+    }
   };
 
   const getRoleBadge = (role: string) => {
@@ -365,7 +449,21 @@ export default function UserManagement() {
                             <span className="text-sm">{userData.email}</span>
                           </TableCell>
                           <TableCell>
-                            {getRoleBadge(userData.role)}
+                            <Select 
+                              value={userData.role} 
+                              onValueChange={(value) => handleRoleChange(userData.id, value)}
+                              disabled={userData.id === user?.id}
+                            >
+                              <SelectTrigger className="w-40">
+                                <SelectValue>{getRoleBadge(userData.role)}</SelectValue>
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="prompt_engineer">Prompt Engineer</SelectItem>
+                                <SelectItem value="engineering_lead">Engineering Lead</SelectItem>
+                                <SelectItem value="api_developer">API Developer</SelectItem>
+                                <SelectItem value="admin">Admin</SelectItem>
+                              </SelectContent>
+                            </Select>
                           </TableCell>
                           <TableCell>
                             {getStatusBadge(userData.isActive)}
@@ -380,10 +478,29 @@ export default function UserManagement() {
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center space-x-2">
-                              <Button variant="ghost" size="sm">
-                                <Edit className="h-4 w-4" />
+                              {/* Toggle Status Button */}
+                              <Button 
+                                variant="ghost" 
+                                size="sm"
+                                onClick={() => handleToggleStatus(userData.id, userData.isActive)}
+                                disabled={userData.id === user?.id}
+                                title={userData.isActive ? "Deactivate user" : "Activate user"}
+                              >
+                                {userData.isActive ? (
+                                  <XCircle className="h-4 w-4 text-orange-500" />
+                                ) : (
+                                  <CheckCircle className="h-4 w-4 text-green-500" />
+                                )}
                               </Button>
-                              <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700">
+                              {/* Delete Button */}
+                              <Button 
+                                variant="ghost" 
+                                size="sm" 
+                                className="text-red-600 hover:text-red-700"
+                                onClick={() => handleDeleteUser(userData.id)}
+                                disabled={userData.id === user?.id}
+                                title="Delete user"
+                              >
                                 <Trash2 className="h-4 w-4" />
                               </Button>
                             </div>

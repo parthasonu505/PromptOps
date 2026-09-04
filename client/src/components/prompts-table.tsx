@@ -116,8 +116,8 @@ export function PromptsTable() {
   const submitForApprovalMutation = useMutation({
     mutationFn: async ({ promptId, versionId, comments }: { promptId: number; versionId: number; comments?: string }) => {
       const response = await apiRequest("POST", "/api/approvals", {
-        prompt_id: promptId,
-        version_id: versionId,
+        promptId,
+        versionId,
         comments,
       });
       return response.json();

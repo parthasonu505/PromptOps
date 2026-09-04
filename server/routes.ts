@@ -185,7 +185,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(401).json({ message: "User not authenticated" });
       }
 
-      const statusFilter = req.query.status as string | undefined;
+      const statusFilter = (req.query.status_filter || req.query.status) as string | undefined;
       const isLeadOrAdmin = req.user.role === 'engineering_lead' || req.user.role === 'admin';
 
       const filters: any = {};
@@ -249,6 +249,76 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Failed to create approval:", error);
       res.status(500).json({ message: "Failed to create approval" });
+    }
+  });
+
+  // Update approval (approve/reject)
+  app.put('/api/approvals/:id', requireAuth, requireRole(['engineering_lead', 'admin']), async (req: AuthenticatedRequest, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: "User not authenticated" });
+      }
+
+      const approvalId = parseInt(req.params.id);
+      const { status, comments } = req.body;
+
+      if (!status || !['approved', 'rejected'].includes(status)) {
+        return res.status(400).json({ message: "Invalid status. Must be 'approved' or 'rejected'" });
+      }
+
+      // Check approval exists
+      const existing = await storage.getApproval(approvalId);
+      if (!existing) {
+        return res.status(404).json({ message: "Approval not found" });
+      }
+
+      if (existing.status !== 'pending') {
+        return res.status(400).json({ message: "Approval has already been reviewed" });
+      }
+
+      // Update the approval
+      const updated = await storage.updateApproval(approvalId, {
+        status,
+        comments,
+        approverId: req.user.id,
+      });
+
+      // If approved, update the prompt version status
+      if (status === 'approved' && updated) {
+        await storage.updatePromptVersion(existing.versionId, { status: 'approved' });
+      }
+
+      res.json(updated);
+    } catch (error) {
+      console.error("Failed to update approval:", error);
+      res.status(500).json({ message: "Failed to update approval" });
+    }
+  });
+
+  // Get single approval with details
+  app.get('/api/approvals/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const approvalId = parseInt(req.params.id);
+      const approval = await storage.getApproval(approvalId);
+      
+      if (!approval) {
+        return res.status(404).json({ message: "Approval not found" });
+      }
+
+      // Get related prompt and version
+      const prompt = await storage.getPrompt(approval.promptId);
+      const version = await storage.getPromptVersion(approval.versionId);
+      const requester = await storage.getUser(approval.requesterId);
+
+      res.json({
+        ...approval,
+        prompt: prompt ? { id: prompt.id, name: prompt.name, description: prompt.description, category: prompt.category } : null,
+        version: version ? { id: version.id, version: version.version, content: version.content } : null,
+        requester: requester ? { id: requester.id, username: requester.username, firstName: requester.firstName, lastName: requester.lastName } : null,
+      });
+    } catch (error) {
+      console.error("Failed to fetch approval:", error);
+      res.status(500).json({ message: "Failed to fetch approval" });
     }
   });
 
@@ -420,41 +490,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // LLM Provider routes
+  // LLM Provider routes - returns providers from database
   app.get('/api/llm-providers', requireAuth, async (req, res) => {
     try {
-      const providers = await storage.getLlmProviders();
-      res.json(providers);
+      // First try to get from database
+      const dbProviders = await storage.getLlmProviders();
+      
+      if (dbProviders && dbProviders.length > 0) {
+        res.json(dbProviders);
+      } else {
+        // Fallback to service providers if database is empty
+        const providers = llmService.getProviders();
+        res.json(providers);
+      }
     } catch (error) {
       console.error("Failed to fetch LLM providers:", error);
       res.status(500).json({ message: "Failed to fetch LLM providers" });
     }
   });
 
-  // User LLM Configuration routes
-  app.get('/api/user-llm-configs', requireAuth, async (req: AuthenticatedRequest, res) => {
+  // User LLM Configuration routes (supports both /api/llm-configs and /api/user-llm-configs)
+  const getLlmConfigs = async (req: AuthenticatedRequest, res: any) => {
     try {
-      if (!req.user) {
-        return res.status(401).json({ message: "User not authenticated" });
-      }
-
+      if (!req.user) return res.status(401).json({ message: "User not authenticated" });
       const configs = await storage.getUserLlmConfigs(req.user.id);
       res.json(configs);
     } catch (error) {
-      console.error("Failed to fetch user LLM configs:", error);
+      console.error("Failed to fetch LLM configs:", error);
       res.status(500).json({ message: "Failed to fetch LLM configurations" });
     }
-  });
+  };
+  app.get('/api/user-llm-configs', requireAuth, getLlmConfigs);
+  app.get('/api/llm-configs', requireAuth, getLlmConfigs);
 
-  app.post('/api/user-llm-configs', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const createLlmConfig = async (req: AuthenticatedRequest, res: any) => {
     try {
-      if (!req.user) {
-        return res.status(401).json({ message: "User not authenticated" });
-      }
-
+      if (!req.user) return res.status(401).json({ message: "User not authenticated" });
+      
+      // Encrypt the API key before storing
+      const encryptedApiKey = llmService.encryptApiKey(req.body.apiKey);
+      
       const configData = insertUserLlmConfigSchema.parse({
-        ...req.body,
-        userId: req.user.id
+        providerId: req.body.providerId,
+        apiKey: encryptedApiKey,
+        userId: req.user.id,
+        isActive: true
       });
 
       const config = await storage.createUserLlmConfig(configData);
@@ -463,7 +543,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error("Failed to create LLM config:", error);
       res.status(500).json({ message: "Failed to create LLM configuration" });
     }
-  });
+  };
+  app.post('/api/user-llm-configs', requireAuth, createLlmConfig);
+  app.post('/api/llm-configs', requireAuth, createLlmConfig);
 
   app.put('/api/user-llm-configs/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
     try {
@@ -483,32 +565,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.delete('/api/user-llm-configs/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const deleteLlmConfig = async (req: AuthenticatedRequest, res: any) => {
     try {
       const configId = parseInt(req.params.id);
       const deleted = await storage.deleteUserLlmConfig(configId);
-      
-      if (!deleted) {
-        return res.status(404).json({ message: "Configuration not found" });
-      }
-
+      if (!deleted) return res.status(404).json({ message: "Configuration not found" });
       res.status(204).send();
     } catch (error) {
       console.error("Failed to delete LLM config:", error);
       res.status(500).json({ message: "Failed to delete LLM configuration" });
     }
-  });
+  };
+  app.delete('/api/user-llm-configs/:id', requireAuth, deleteLlmConfig);
+  app.delete('/api/llm-configs/:id', requireAuth, deleteLlmConfig);
 
-  // LLM Providers endpoint
-  app.get('/api/llm-providers', requireAuth, async (req: AuthenticatedRequest, res) => {
+  // Update LLM config
+  const updateLlmConfig = async (req: AuthenticatedRequest, res: any) => {
     try {
-      const providers = llmService.getProviders();
-      res.json(providers);
+      const configId = parseInt(req.params.id);
+      const updateData = insertUserLlmConfigSchema.partial().parse(req.body);
+      const config = await storage.updateUserLlmConfig(configId, updateData);
+      if (!config) return res.status(404).json({ message: "Configuration not found" });
+      res.json(config);
     } catch (error) {
-      console.error("Failed to fetch LLM providers:", error);
-      res.status(500).json({ message: "Failed to fetch LLM providers" });
+      console.error("Failed to update LLM config:", error);
+      res.status(500).json({ message: "Failed to update LLM configuration" });
     }
-  });
+  };
+  app.put('/api/user-llm-configs/:id', requireAuth, updateLlmConfig);
+  app.put('/api/llm-configs/:id', requireAuth, updateLlmConfig);
 
   // Test LLM endpoint for playground
   app.post('/api/llm/test', requireAuth, async (req: AuthenticatedRequest, res) => {
@@ -521,31 +606,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // For GitHub Models, we need to get the user's GitHub token
+      // Get API key based on provider
       let apiKey = '';
       
       if (provider === 'github_models') {
-        // For GitHub Models, we expect the user to have a GitHub token
-        // This would be configured in their environment or provided via a config
         apiKey = process.env.GITHUB_TOKEN || '';
-        
         if (!apiKey) {
-          return res.status(400).json({ 
-            message: "GitHub token is required for GitHub Models. Please set GITHUB_TOKEN environment variable." 
-          });
+          return res.status(400).json({ message: "GitHub token required. Set GITHUB_TOKEN environment variable." });
+        }
+      } else if (provider === 'gemini') {
+        apiKey = process.env.GOOGLE_API_KEY || '';
+        if (!apiKey) {
+          // Try user config
+          const userConfigs = await storage.getUserLlmConfigs(req.user!.id);
+          const config = userConfigs.find((c: any) => c.provider?.name === provider && c.isActive);
+          apiKey = config?.apiKey ? llmService.decryptApiKey(config.apiKey) : '';
+        }
+        if (!apiKey) {
+          return res.status(400).json({ message: "Google API key required. Configure in LLM Settings or set GOOGLE_API_KEY." });
         }
       } else {
-        // For other providers, get the user's API key from their config
-        const userConfigs = await storage.getUserLlmConfigs(req.user.id);
-        const config = userConfigs.find(c => c.provider?.name === provider && c.isActive);
-        
-        if (!config) {
-          return res.status(400).json({ 
-            message: `No active configuration found for ${provider}` 
-          });
+        // For other providers, get from user config
+        const userConfigs = await storage.getUserLlmConfigs(req.user!.id);
+        const config = userConfigs.find((c: any) => c.provider?.name === provider && c.isActive);
+        if (!config?.apiKey) {
+          return res.status(400).json({ message: `No active configuration found for ${provider}. Configure in LLM Settings.` });
         }
-        
-        apiKey = config.apiKey;
+        apiKey = llmService.decryptApiKey(config.apiKey);
       }
 
       const result = await llmService.sendPrompt(
@@ -713,6 +800,134 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Failed to fetch stats:", error);
       res.status(500).json({ message: "Failed to fetch stats" });
+    }
+  });
+
+  // ==========================================
+  // User Management Routes
+  // ==========================================
+
+  app.get('/api/users', requireAuth, requireRole(['admin', 'engineering_lead']), async (req: AuthenticatedRequest, res) => {
+    try {
+      const users = await storage.getUsers();
+      // Remove password from response
+      const safeUsers = users.map(({ password, ...user }) => user);
+      res.json(safeUsers);
+    } catch (error) {
+      console.error("Failed to fetch users:", error);
+      res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
+  app.post('/api/users', requireAuth, requireRole(['admin']), async (req: AuthenticatedRequest, res) => {
+    try {
+      // Check if username already exists
+      const existingUser = await storage.getUserByUsername(req.body.username);
+      if (existingUser) {
+        return res.status(400).json({ message: "Username already exists" });
+      }
+
+      const userData = insertUserSchema.parse({
+        ...req.body,
+        isActive: true
+      });
+
+      const user = await storage.createUser(userData);
+      // Remove password from response
+      const { password, ...safeUser } = user;
+      res.status(201).json(safeUser);
+    } catch (error) {
+      console.error("Failed to create user:", error);
+      res.status(500).json({ message: "Failed to create user" });
+    }
+  });
+
+  app.put('/api/users/:id', requireAuth, requireRole(['admin']), async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const updateData = insertUserSchema.partial().parse(req.body);
+
+      const user = await storage.updateUser(userId, updateData);
+      
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      // Remove password from response
+      const { password, ...safeUser } = user;
+      res.json(safeUser);
+    } catch (error) {
+      console.error("Failed to update user:", error);
+      res.status(500).json({ message: "Failed to update user" });
+    }
+  });
+
+  app.delete('/api/users/:id', requireAuth, requireRole(['admin']), async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      
+      // Prevent deleting yourself
+      if (req.user && req.user.id === userId) {
+        return res.status(400).json({ message: "Cannot delete your own account" });
+      }
+
+      const deleted = await storage.deleteUser(userId);
+      
+      if (!deleted) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      res.status(204).send();
+    } catch (error) {
+      console.error("Failed to delete user:", error);
+      res.status(500).json({ message: "Failed to delete user" });
+    }
+  });
+
+  app.put('/api/users/:id/role', requireAuth, requireRole(['admin']), async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const { role } = req.body;
+
+      if (!['prompt_engineer', 'engineering_lead', 'api_developer', 'admin'].includes(role)) {
+        return res.status(400).json({ message: "Invalid role" });
+      }
+
+      const user = await storage.updateUser(userId, { role });
+      
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const { password, ...safeUser } = user;
+      res.json(safeUser);
+    } catch (error) {
+      console.error("Failed to update user role:", error);
+      res.status(500).json({ message: "Failed to update user role" });
+    }
+  });
+
+  app.put('/api/users/:id/status', requireAuth, requireRole(['admin']), async (req: AuthenticatedRequest, res) => {
+    try {
+      const userId = parseInt(req.params.id);
+      const { isActive } = req.body;
+
+      // Prevent deactivating yourself
+      if (req.user && req.user.id === userId && !isActive) {
+        return res.status(400).json({ message: "Cannot deactivate your own account" });
+      }
+
+      const user = await storage.updateUser(userId, { isActive });
+      
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const { password, ...safeUser } = user;
+      res.json(safeUser);
+    } catch (error) {
+      console.error("Failed to update user status:", error);
+      res.status(500).json({ message: "Failed to update user status" });
     }
   });
 

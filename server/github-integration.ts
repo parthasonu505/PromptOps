@@ -13,7 +13,27 @@ export class GitHubIntegration {
   private config: GitHubConfig;
 
   constructor(config: GitHubConfig) {
-    this.config = config;
+    let cleanRepo = config.repo;
+    
+    if (cleanRepo.includes('github.com')) {
+      // Extracts 'repo' from full GitHub URL
+      const parts = cleanRepo.split('/');
+      cleanRepo = parts.pop() || cleanRepo;
+    } else if (cleanRepo.includes('/')) {
+      // Extracts 'repo' from 'owner/repo'
+      const parts = cleanRepo.split('/');
+      cleanRepo = parts.pop() || cleanRepo;
+    }
+    
+    // Remove '.git' suffix if the user accidentally included it
+    cleanRepo = cleanRepo.replace(/\.git$/, '');
+
+    // Assign the cleaned config
+    this.config = {
+      ...config,
+      repo: cleanRepo
+    };
+
     this.octokit = new Octokit({
       auth: config.token,
     });

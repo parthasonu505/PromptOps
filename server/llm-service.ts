@@ -222,7 +222,7 @@ class AnthropicProvider implements ILLMProvider {
   }
 }
 
-// Google Gemini Provider
+// Google Gemini Provider - using direct REST API
 class GeminiProvider implements ILLMProvider {
   name = 'gemini';
 
@@ -235,38 +235,43 @@ class GeminiProvider implements ILLMProvider {
     const startTime = Date.now();
     
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`, {
+      // Use Gemini REST API directly with API key
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+      
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
+          contents: [{ 
+            parts: [{ text: prompt }] 
+          }],
           generationConfig: {
+            maxOutputTokens: options.maxTokens || 8192,
             temperature: options.temperature || 0.7,
-            maxOutputTokens: options.maxTokens || 1000,
-            ...options,
           },
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
-      }
-
       const data = await response.json();
       const responseTime = Date.now() - startTime;
       
-      const model = this.getModels().find(m => m.id === modelId);
-      // Gemini doesn't provide token usage in all responses
+      if (!response.ok) {
+        const errorMsg = data?.error?.message || `Gemini API error: ${response.status}`;
+        throw new Error(errorMsg);
+      }
+
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       const inputTokens = data.usageMetadata?.promptTokenCount || 0;
       const outputTokens = data.usageMetadata?.candidatesTokenCount || 0;
       
+      const model = this.getModels().find(m => m.id === modelId);
       const cost = model ? 
         (inputTokens / 1000 * model.inputCostPer1k + outputTokens / 1000 * model.outputCostPer1k) * 100 : 0;
 
       return {
-        response: data.candidates?.[0]?.content?.parts?.[0]?.text || '',
+        response: text,
         responseTime,
         tokens: { input: inputTokens, output: outputTokens },
         cost: Math.round(cost),
@@ -289,16 +294,32 @@ class GeminiProvider implements ILLMProvider {
   getModels() {
     return [
       {
-        id: 'gemini-2.5-flash',
-        name: 'Gemini 2.5 Flash',
+        id: 'gemini-3.6-flash',
+        name: 'Gemini 3.6 Flash',
         contextWindow: 1000000,
-        inputCostPer1k: 0.075,
-        outputCostPer1k: 0.3,
+        inputCostPer1k: 0,
+        outputCostPer1k: 0,
         capabilities: ['text', 'vision', 'fast_response'],
       },
       {
-        id: 'gemini-2.5-pro',
-        name: 'Gemini 2.5 Pro',
+        id: 'gemini-3.5-flash',
+        name: 'Gemini 3.5 Flash',
+        contextWindow: 1000000,
+        inputCostPer1k: 0,
+        outputCostPer1k: 0,
+        capabilities: ['text', 'vision', 'fast_response'],
+      },
+      {
+        id: 'gemini-flash-latest',
+        name: 'Gemini Flash (Latest)',
+        contextWindow: 1000000,
+        inputCostPer1k: 0,
+        outputCostPer1k: 0,
+        capabilities: ['text', 'vision', 'fast_response'],
+      },
+      {
+        id: 'gemini-pro-latest',
+        name: 'Gemini Pro (Latest)',
         contextWindow: 2000000,
         inputCostPer1k: 1.25,
         outputCostPer1k: 5.0,
@@ -382,7 +403,8 @@ export class LLMService {
     providerId: string,
     modelId: string,
     apiKey: string,
-    options: Record<string, any> = {}
+    options: Record<string, any> = {},
+    isEncrypted: boolean = false
   ): Promise<LLMResponse> {
     const provider = this.providers.get(providerId);
     if (!provider) {
@@ -397,7 +419,8 @@ export class LLMService {
       };
     }
 
-    const decryptedApiKey = this.decryptApiKey(apiKey);
+    // Only decrypt if the key is encrypted (from database storage)
+    const decryptedApiKey = isEncrypted ? this.decryptApiKey(apiKey) : apiKey;
     return provider.sendPrompt(prompt, modelId, decryptedApiKey, options);
   }
 
@@ -406,6 +429,7 @@ export class LLMService {
       openai: 'OpenAI',
       anthropic: 'Anthropic',
       gemini: 'Google Gemini',
+      google: 'Google AI',
       github_models: 'GitHub Models',
     };
     return names[providerName] || providerName;

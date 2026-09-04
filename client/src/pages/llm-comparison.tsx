@@ -70,27 +70,39 @@ export default function LLMComparison() {
   const [activeComparison, setActiveComparison] = useState<Comparison | null>(null);
 
   // Fetch available LLM providers
-  const { data: providers = [] } = useQuery({
+  const { data: providers = [] } = useQuery<LLMProvider[]>({
     queryKey: ['/api/llm-providers'],
-    meta: { headers: getAuthHeaders() },
+    queryFn: async () => {
+      const res = await fetch('/api/llm-providers', { headers: getAuthHeaders() });
+      return res.ok ? res.json() : [];
+    },
   });
 
   // Fetch user's prompts
-  const { data: prompts = [] } = useQuery({
+  const { data: prompts = [] } = useQuery<Prompt[]>({
     queryKey: ['/api/prompts'],
-    meta: { headers: getAuthHeaders() },
+    queryFn: async () => {
+      const res = await fetch('/api/prompts', { headers: getAuthHeaders() });
+      return res.ok ? res.json() : [];
+    },
   });
 
   // Fetch user's LLM configurations
-  const { data: userConfigs = [] } = useQuery({
+  const { data: userConfigs = [] } = useQuery<any[]>({
     queryKey: ['/api/llm-configs'],
-    meta: { headers: getAuthHeaders() },
+    queryFn: async () => {
+      const res = await fetch('/api/llm-configs', { headers: getAuthHeaders() });
+      return res.ok ? res.json() : [];
+    },
   });
 
   // Fetch user's comparison history
-  const { data: comparisons = [] } = useQuery({
-    queryKey: ['/api/comparisons'],
-    meta: { headers: getAuthHeaders() },
+  const { data: comparisons = [] } = useQuery<Comparison[]>({
+    queryKey: ['/api/prompt-comparisons'],
+    queryFn: async () => {
+      const res = await fetch('/api/prompt-comparisons', { headers: getAuthHeaders() });
+      return res.ok ? res.json() : [];
+    },
   });
 
   const selectedPrompt = prompts.find((p: Prompt) => p.id === selectedPromptId);
@@ -115,11 +127,12 @@ export default function LLMComparison() {
       models: string[];
       inputData: Record<string, any>;
     }) => {
-      return apiRequest('/api/comparisons', {
-        method: 'POST',
-        body: JSON.stringify(data),
-        headers: getAuthHeaders(),
+      const res = await apiRequest('POST', '/api/prompt-comparisons', {
+        name: data.name,
+        prompt: data.inputData.prompt || selectedPrompt?.content || "",
+        models: data.models,
       });
+      return res.json();
     },
     onSuccess: (comparison) => {
       queryClient.invalidateQueries({ queryKey: ['/api/comparisons'] });
@@ -145,11 +158,7 @@ export default function LLMComparison() {
       score: number;
       notes?: string;
     }) => {
-      return apiRequest(`/api/comparisons/${comparisonId}/score`, {
-        method: 'PUT',
-        body: JSON.stringify({ modelId, score, notes }),
-        headers: getAuthHeaders(),
-      });
+      return apiRequest('PUT', `/api/prompt-comparisons/${comparisonId}`, { modelId, score, notes });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/comparisons'] });

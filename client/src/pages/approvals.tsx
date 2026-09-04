@@ -39,14 +39,14 @@ import {
 
 interface Approval {
   id: number;
-  prompt_id: number;
-  version_id: number;
-  requester_id: number;
-  approver_id?: number;
+  promptId: number;
+  versionId: number;
+  requesterId: number;
+  approverId?: number;
   status: "pending" | "approved" | "rejected";
   comments?: string;
-  requested_at: string;
-  reviewed_at?: string;
+  requestedAt: string;
+  reviewedAt?: string;
   prompt?: {
     id: number;
     name: string;
@@ -55,15 +55,20 @@ interface Approval {
   };
   requester?: {
     id: number;
-    first_name: string;
-    last_name: string;
+    firstName: string;
+    lastName: string;
     username: string;
   };
   approver?: {
     id: number;
-    first_name: string;
-    last_name: string;
+    firstName: string;
+    lastName: string;
     username: string;
+  };
+  version?: {
+    id: number;
+    version: string;
+    content: string;
   };
 }
 
@@ -74,6 +79,8 @@ export default function Approvals() {
   const [statusFilter, setStatusFilter] = useState("");
   const [selectedApproval, setSelectedApproval] = useState<Approval | null>(null);
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
+  const [viewDialogOpen, setViewDialogOpen] = useState(false);
+  const [viewApproval, setViewApproval] = useState<Approval | null>(null);
   const [reviewAction, setReviewAction] = useState<"approve" | "reject">("approve");
   const [reviewComments, setReviewComments] = useState("");
 
@@ -99,6 +106,26 @@ export default function Approvals() {
     // All authenticated users can view approvals (their own or all if lead/admin)
     enabled: !!user,
   });
+
+  // Fetch single approval details for viewing
+  const handleViewApproval = async (approval: Approval) => {
+    try {
+      const response = await fetch(`/api/approvals/${approval.id}`, {
+        headers: getAuthHeaders(),
+      });
+      if (response.ok) {
+        const fullApproval = await response.json();
+        setViewApproval(fullApproval);
+        setViewDialogOpen(true);
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to fetch approval details",
+        variant: "destructive",
+      });
+    }
+  };
 
   const reviewApprovalMutation = useMutation({
     mutationFn: async ({ id, status, comments }: { id: number; status: "approved" | "rejected"; comments: string }) => {
@@ -167,23 +194,7 @@ export default function Approvals() {
     );
   };
 
-  if (!canApprove) {
-    return (
-      <div className="py-6">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <Card>
-            <CardContent className="p-6 text-center">
-              <AlertCircle className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="text-lg font-medium text-foreground mb-2">Access Denied</h3>
-              <p className="text-muted-foreground">
-                You don't have permission to view approvals. Contact your administrator for access.
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    );
-  }
+  // All users can view their approvals - removed the !canApprove block
 
   if (isLoading) {
     return (
@@ -353,7 +364,7 @@ export default function Approvals() {
                               <div>
                                 <p className="text-sm font-medium">
                                   {approval.requester 
-                                    ? `${approval.requester.first_name} ${approval.requester.last_name}`
+                                    ? `${approval.requester.firstName} ${approval.requester.lastName}`
                                     : "Unknown User"
                                   }
                                 </p>
@@ -368,19 +379,25 @@ export default function Approvals() {
                           </TableCell>
                           <TableCell>
                             <div className="text-sm">
-                              <div>{format(new Date(approval.requested_at), "MMM d, yyyy")}</div>
-                              <div className="text-xs text-muted-foreground">
-                                {format(new Date(approval.requested_at), "h:mm a")}
-                              </div>
+                              {approval.requestedAt ? (
+                                <>
+                                  <div>{format(new Date(approval.requestedAt), "MMM d, yyyy")}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {format(new Date(approval.requestedAt), "h:mm a")}
+                                  </div>
+                                </>
+                              ) : (
+                                <span className="text-muted-foreground">Date unavailable</span>
+                              )}
                             </div>
                           </TableCell>
                           <TableCell>
-                            {approval.reviewed_at ? (
+                            {approval.reviewedAt ? (
                               <div className="text-sm">
-                                <div>{format(new Date(approval.reviewed_at), "MMM d, yyyy")}</div>
+                                <div>{format(new Date(approval.reviewedAt), "MMM d, yyyy")}</div>
                                 <div className="text-xs text-muted-foreground">
                                   by {approval.approver 
-                                    ? `${approval.approver.first_name} ${approval.approver.last_name}`
+                                    ? `${approval.approver.firstName} ${approval.approver.lastName}`
                                     : "Unknown"
                                   }
                                 </div>
@@ -391,7 +408,12 @@ export default function Approvals() {
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center space-x-2">
-                              <Button variant="ghost" size="sm">
+                              <Button 
+                                variant="ghost" 
+                                size="sm"
+                                onClick={() => handleViewApproval(approval)}
+                                title="View Details"
+                              >
                                 <Eye className="h-4 w-4" />
                               </Button>
                               {/* Only show approve/reject buttons for leads and admins */}
@@ -447,7 +469,7 @@ export default function Approvals() {
               <div>
                 <Label className="text-sm font-medium">Prompt</Label>
                 <p className="text-sm text-muted-foreground">
-                  {selectedApproval.prompt?.name || `Prompt #${selectedApproval.prompt_id}`}
+                  {selectedApproval.prompt?.name || `Prompt #${selectedApproval.promptId}`}
                 </p>
               </div>
               
@@ -455,7 +477,7 @@ export default function Approvals() {
                 <Label className="text-sm font-medium">Requester</Label>
                 <p className="text-sm text-muted-foreground">
                   {selectedApproval.requester 
-                    ? `${selectedApproval.requester.first_name} ${selectedApproval.requester.last_name}`
+                    ? `${selectedApproval.requester.firstName} ${selectedApproval.requester.lastName}`
                     : "Unknown User"
                   }
                 </p>
@@ -493,6 +515,123 @@ export default function Approvals() {
                 : `${reviewAction === "approve" ? "Approve" : "Reject"}`
               }
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Approval Details Dialog */}
+      <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
+        <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center">
+              <FileText className="mr-2 h-5 w-5" />
+              Approval Details
+            </DialogTitle>
+          </DialogHeader>
+          
+          {viewApproval && (
+            <div className="space-y-6">
+              {/* Status Badge */}
+              <div className="flex items-center justify-between">
+                <Badge 
+                  className={
+                    viewApproval.status === "approved" 
+                      ? "bg-green-100 text-green-800"
+                      : viewApproval.status === "rejected"
+                      ? "bg-red-100 text-red-800"
+                      : "bg-yellow-100 text-yellow-800"
+                  }
+                >
+                  {viewApproval.status.charAt(0).toUpperCase() + viewApproval.status.slice(1)}
+                </Badge>
+                <span className="text-sm text-muted-foreground">
+                  Requested: {format(new Date(viewApproval.requestedAt), "PPp")}
+                </span>
+              </div>
+
+              {/* Prompt Info */}
+              <div className="border rounded-lg p-4 space-y-3">
+                <h3 className="font-semibold text-lg">
+                  {viewApproval.prompt?.name || `Prompt #${viewApproval.promptId}`}
+                </h3>
+                <p className="text-muted-foreground">
+                  {viewApproval.prompt?.description || "No description available"}
+                </p>
+                {viewApproval.prompt?.category && (
+                  <Badge variant="outline">{viewApproval.prompt.category}</Badge>
+                )}
+              </div>
+
+              {/* Version Content */}
+              {viewApproval.version && (
+                <div className="border rounded-lg p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium">Version: {viewApproval.version.version}</h4>
+                    <Badge variant="secondary">v{viewApproval.versionId}</Badge>
+                  </div>
+                  <pre className="bg-muted p-4 rounded-md text-sm overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">
+                    {viewApproval.version.content || "No content available"}
+                  </pre>
+                </div>
+              )}
+
+              {/* Requester Info */}
+              <div className="flex items-center space-x-4 p-4 bg-muted rounded-lg">
+                <User className="h-8 w-8 text-muted-foreground" />
+                <div>
+                  <p className="font-medium">
+                    {viewApproval.requester 
+                      ? `${viewApproval.requester.firstName} ${viewApproval.requester.lastName}`
+                      : "Unknown User"
+                    }
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    @{viewApproval.requester?.username || "unknown"}
+                  </p>
+                </div>
+              </div>
+
+              {/* Comments */}
+              {viewApproval.comments && (
+                <div className="border rounded-lg p-4">
+                  <h4 className="font-medium mb-2 flex items-center">
+                    <MessageSquare className="mr-2 h-4 w-4" />
+                    Comments
+                  </h4>
+                  <p className="text-muted-foreground">{viewApproval.comments}</p>
+                </div>
+              )}
+            </div>
+          )}
+          
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewDialogOpen(false)}>
+              Close
+            </Button>
+            {canApprove && viewApproval?.status === "pending" && (
+              <>
+                <Button 
+                  className="bg-green-600 hover:bg-green-700"
+                  onClick={() => {
+                    setViewDialogOpen(false);
+                    handleReview(viewApproval, "approve");
+                  }}
+                >
+                  <CheckCircle className="mr-2 h-4 w-4" />
+                  Approve
+                </Button>
+                <Button 
+                  variant="destructive"
+                  onClick={() => {
+                    setViewDialogOpen(false);
+                    handleReview(viewApproval, "reject");
+                  }}
+                >
+                  <XCircle className="mr-2 h-4 w-4" />
+                  Reject
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
