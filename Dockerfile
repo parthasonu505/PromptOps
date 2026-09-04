@@ -64,7 +64,7 @@ RUN addgroup --system --gid 1001 nodejs && \
 COPY package.json package-lock.json ./
 
 # Install production dependencies only (skip devDependencies)
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci && npm cache clean --force
 
 # Copy built assets from builder stage
 COPY --from=builder /app/dist ./dist
