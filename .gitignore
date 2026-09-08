@@ -1,6 +1,9 @@
+# Environment variables
+.env
+.env.*
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
 node_modules
-dist
-.DS_Store
-server/public
-vite.config.ts.*
-*.tar.gz
