@@ -56,6 +56,8 @@ interface Prompt {
   rating: number;
   createdAt: string;
   updatedAt: string;
+  hasDraftVersion?: boolean;
+  latestDraftVersionId?: number;
 }
 
 export function PromptsTable() {
@@ -150,9 +152,12 @@ export function PromptsTable() {
   const handleConfirmApproval = () => {
     if (!selectedPromptForApproval) return;
     
-    // Get the latest version or current version
+    // Priority: latestDraftVersionId > currentVersionId > latest from versions list
+    // If there's a draft version waiting, use that; otherwise use current version
     const latestVersion = versions.length > 0 ? versions[0] : null;
-    const versionId = selectedPromptForApproval.currentVersionId || latestVersion?.id;
+    const versionId = selectedPromptForApproval.latestDraftVersionId 
+      || selectedPromptForApproval.currentVersionId 
+      || latestVersion?.id;
     
     if (!versionId) {
       // If no version exists, we need to create one first
@@ -436,13 +441,16 @@ export function PromptsTable() {
                         <Button variant="ghost" size="sm">
                           <History className="h-4 w-4" />
                         </Button>
-                        {/* Submit for Approval button - only show for draft or rejected prompts */}
-                        {(prompt.status === "draft" || prompt.status === "rejected") && (
+                        {/* Submit for Approval button - show when:
+                            1. Prompt status is draft or rejected, OR
+                            2. Prompt has a draft version (even if prompt is approved)
+                        */}
+                        {(prompt.status === "draft" || prompt.status === "rejected" || prompt.hasDraftVersion) && (
                           <Button 
                             variant="ghost" 
                             size="sm"
                             onClick={() => handleSubmitForApproval(prompt)}
-                            title="Submit for Approval"
+                            title={prompt.hasDraftVersion ? "Submit New Version for Approval" : "Submit for Approval"}
                           >
                             <Send className="h-4 w-4 text-blue-600" />
                           </Button>

@@ -85,6 +85,9 @@ class Prompt(PromptBase):
     rating: Optional[int] = None
     created_at: datetime
     updated_at: datetime
+    # Additional computed fields
+    has_draft_version: bool = False
+    latest_draft_version_id: Optional[int] = None
 
     class Config:
         from_attributes = True

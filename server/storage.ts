@@ -143,9 +143,28 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Prompts
-  async getPrompt(id: number): Promise<Prompt | undefined> {
+  async getPrompt(id: number): Promise<(Prompt & { hasDraftVersion?: boolean; latestDraftVersionId?: number }) | undefined> {
     const [prompt] = await db.select().from(prompts).where(eq(prompts.id, id));
-    return prompt || undefined;
+    if (!prompt) return undefined;
+    
+    // Check for draft versions
+    const draftVersions = await db
+      .select()
+      .from(promptVersions)
+      .where(
+        and(
+          eq(promptVersions.promptId, prompt.id),
+          eq(promptVersions.status, 'draft')
+        )
+      )
+      .orderBy(desc(promptVersions.createdAt))
+      .limit(1);
+    
+    return {
+      ...prompt,
+      hasDraftVersion: draftVersions.length > 0,
+      latestDraftVersionId: draftVersions.length > 0 ? draftVersions[0].id : undefined,
+    };
   }
 
   async getPrompts(filters?: {
@@ -154,7 +173,7 @@ export class DatabaseStorage implements IStorage {
     environment?: string;
     authorId?: number;
     search?: string;
-  }): Promise<Prompt[]> {
+  }): Promise<(Prompt & { hasDraftVersion?: boolean; latestDraftVersionId?: number })[]> {
     let query = db.select().from(prompts);
     
     const conditions = [];
@@ -188,7 +207,33 @@ export class DatabaseStorage implements IStorage {
       query = query.where(and(...conditions));
     }
     
-    return query.orderBy(desc(prompts.updatedAt));
+    const promptList = await query.orderBy(desc(prompts.updatedAt));
+    
+    // Enrich prompts with draft version info
+    const enrichedPrompts = await Promise.all(
+      promptList.map(async (prompt) => {
+        // Check for draft versions
+        const draftVersions = await db
+          .select()
+          .from(promptVersions)
+          .where(
+            and(
+              eq(promptVersions.promptId, prompt.id),
+              eq(promptVersions.status, 'draft')
+            )
+          )
+          .orderBy(desc(promptVersions.createdAt))
+          .limit(1);
+        
+        return {
+          ...prompt,
+          hasDraftVersion: draftVersions.length > 0,
+          latestDraftVersionId: draftVersions.length > 0 ? draftVersions[0].id : undefined,
+        };
+      })
+    );
+    
+    return enrichedPrompts;
   }
 
   async createPrompt(insertPrompt: InsertPrompt): Promise<Prompt> {

@@ -253,6 +253,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // 3. Create the approval
       const approval = await storage.createApproval(approvalData);
+      
+      // 4. Update version status to pending_review
+      await storage.updatePromptVersion(approvalData.versionId, { status: 'pending_review' });
+      
+      // 5. If the prompt is draft, update it to pending_review too
+      const promptId = approvalData.promptId || version.promptId;
+      const prompt = await storage.getPrompt(promptId);
+      if (prompt && prompt.status === 'draft') {
+        await storage.updatePrompt(promptId, { status: 'pending_review' });
+      }
+      
       res.status(201).json(approval);
       
     } catch (error) {
@@ -292,9 +303,36 @@ export async function registerRoutes(app: Express): Promise<Server> {
         approverId: req.user.id,
       });
 
-      // If approved, update the prompt version status
+      // If approved, update the prompt and version status
       if (status === 'approved' && updated) {
+        // Update version status to approved
         await storage.updatePromptVersion(existing.versionId, { status: 'approved' });
+        
+        // Update prompt status and current version
+        const prompt = await storage.getPrompt(existing.promptId);
+        if (prompt) {
+          await storage.updatePrompt(existing.promptId, { 
+            status: 'approved',
+            currentVersionId: existing.versionId 
+          });
+          
+          // Sync to Firestore
+          try {
+            const version = await storage.getPromptVersion(existing.versionId);
+            if (version) {
+              const { syncPromptToFirestore } = await import('./firestore-service');
+              const slug = prompt.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+              await syncPromptToFirestore(prompt, version, slug);
+              console.log(`Prompt "${prompt.name}" synced to Firestore`);
+            }
+          } catch (firestoreError) {
+            console.error('Failed to sync to Firestore:', firestoreError);
+            // Don't fail the approval if Firestore sync fails
+          }
+        }
+      } else if (status === 'rejected' && updated) {
+        // Update version status to rejected
+        await storage.updatePromptVersion(existing.versionId, { status: 'rejected' });
       }
 
       res.json(updated);

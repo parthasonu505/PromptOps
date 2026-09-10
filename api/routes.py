@@ -127,6 +127,48 @@ async def create_user(
 
 
 # Prompt routes
+def _enrich_prompt_with_draft_info(prompt: Prompt, db: Session) -> dict:
+    """Add has_draft_version and latest_draft_version_id to prompt data."""
+    prompt_dict = {
+        "id": prompt.id,
+        "name": prompt.name,
+        "description": prompt.description,
+        "content": prompt.content,
+        "category": prompt.category,
+        "status": prompt.status,
+        "environment": prompt.environment,
+        "access_level": prompt.access_level,
+        "variables": prompt.variables or [],
+        "tags": prompt.tags or [],
+        "fragment_slugs": prompt.fragment_slugs or [],
+        "author_id": prompt.author_id,
+        "current_version_id": prompt.current_version_id,
+        "usage_count": prompt.usage_count,
+        "rating": prompt.rating,
+        "created_at": prompt.created_at,
+        "updated_at": prompt.updated_at,
+        "has_draft_version": False,
+        "latest_draft_version_id": None,
+    }
+    
+    # Check for draft versions that are not the current approved version
+    draft_version = (
+        db.query(PromptVersion)
+        .filter(
+            PromptVersion.prompt_id == prompt.id,
+            PromptVersion.status == "draft"
+        )
+        .order_by(PromptVersion.created_at.desc())
+        .first()
+    )
+    
+    if draft_version:
+        prompt_dict["has_draft_version"] = True
+        prompt_dict["latest_draft_version_id"] = draft_version.id
+    
+    return prompt_dict
+
+
 @router.get("/prompts", response_model=List[PromptSchema])
 async def get_prompts(
     category: Optional[str] = None,
@@ -155,7 +197,7 @@ async def get_prompts(
         )
     
     prompts = query.all()
-    return [PromptSchema.from_orm(prompt) for prompt in prompts]
+    return [PromptSchema(**_enrich_prompt_with_draft_info(p, db)) for p in prompts]
 
 
 @router.post("/prompts", response_model=PromptSchema)
@@ -218,7 +260,7 @@ async def get_prompt(
             detail="Access denied"
         )
     
-    return PromptSchema.from_orm(prompt)
+    return PromptSchema(**_enrich_prompt_with_draft_info(prompt, db))
 
 
 @router.put("/prompts/{prompt_id}", response_model=PromptSchema)
@@ -618,8 +660,13 @@ async def create_approval(
     )
     db.add(approval)
     
-    # Update the prompt status to pending_review
-    prompt.status = "pending_review"
+    # Update the version status to pending_review
+    version.status = "pending_review"
+    
+    # Only update prompt status to pending_review if it's currently draft
+    # (If prompt is already approved, keep it approved - just the new version is pending)
+    if prompt.status == "draft":
+        prompt.status = "pending_review"
     
     db.commit()
     db.refresh(approval)
@@ -668,6 +715,18 @@ async def update_approval(
             prompt.current_version_id = approval.version_id
         if version:
             version.status = "approved"
+        
+        # Sync approved prompt to Firestore
+        try:
+            from firestore_service import sync_prompt_to_firestore
+            slug = slugify(prompt.name) if prompt else None
+            if slug and prompt and version:
+                sync_prompt_to_firestore(prompt, version, slug)
+        except Exception as e:
+            # Log but don't fail the approval if Firestore sync fails
+            import logging
+            logging.getLogger(__name__).warning(f"Firestore sync failed: {e}")
+            
     elif approval_update.status == "rejected":
         if prompt:
             prompt.status = "rejected"
@@ -1586,6 +1645,82 @@ def _bump_patch(version_str: str) -> str:
         return ".".join(parts)
     except Exception:
         return version_str + ".1"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FIRESTORE SYNC
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post("/firestore/sync")
+async def sync_all_to_firestore(
+    current_user: User = Depends(require_roles(ADMIN_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """
+    Sync all approved prompts to Firestore.
+    
+    This is useful for initial setup or recovery scenarios.
+    Requires admin privileges.
+    """
+    try:
+        from firestore_service import sync_all_approved_prompts
+        result = sync_all_approved_prompts(db)
+        return {
+            "status": "completed",
+            "synced": result.get("synced", 0),
+            "failed": result.get("failed", 0),
+            "skipped": result.get("skipped", False),
+            "error": result.get("error"),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Firestore sync failed: {str(e)}"
+        )
+
+
+@router.post("/firestore/sync/{prompt_id}")
+async def sync_prompt_to_firestore_endpoint(
+    prompt_id: int,
+    current_user: User = Depends(require_roles(LEAD_ROLES)),
+    db: Session = Depends(get_db),
+):
+    """
+    Sync a specific approved prompt to Firestore.
+    
+    Requires lead or admin privileges.
+    """
+    prompt = db.query(Prompt).filter(Prompt.id == prompt_id).first()
+    if not prompt:
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    
+    if prompt.status != "approved":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only approved prompts can be synced. Current status: {prompt.status}"
+        )
+    
+    version = None
+    if prompt.current_version_id:
+        version = db.query(PromptVersion).filter(
+            PromptVersion.id == prompt.current_version_id
+        ).first()
+    
+    try:
+        from firestore_service import sync_prompt_to_firestore
+        slug = slugify(prompt.name)
+        success = sync_prompt_to_firestore(prompt, version, slug)
+        
+        if success:
+            return {"status": "synced", "slug": slug, "prompt_id": prompt_id}
+        else:
+            return {"status": "skipped", "message": "Firestore not configured"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Firestore sync failed: {str(e)}"
+        )
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
